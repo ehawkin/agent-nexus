@@ -1,0 +1,69 @@
+# STATE.md - durable memory for THIS session
+
+<!--
+WHERE THIS FILE LIVES
+  <project directory>/.agent-nexus/<session-name>-STATE.md
+
+  One file PER SESSION, not per folder. Several sessions often work in the same
+  project; a single shared STATE.md would have them overwriting each other's
+  carry-forward without either one noticing. The name in the filename is the
+  session name from sessions.md, so the owner of each notebook is obvious.
+
+  It stays inside the project (rather than in the tool's state directory) because
+  a managed session is denied write access to the control plane. Here, an
+  ordinary file write is enough, and a human sees the notes next to the work.
+  The tool creates .agent-nexus/ for you when a session is given a memory policy.
+
+WHAT THIS IS
+  A rolling notebook that survives a /clear, a /compact, a crash, or a context
+  wipe. It is how a recurring or autonomous session carries facts from one run
+  to the next.
+
+HOW IT IS USED (managed-session `memory:` field)
+  memory: read
+    Every fresh or freshly-cleared brain is told to READ this file before acting.
+    Writing is up to YOU: put your own "update STATE.md" instructions in the
+    session's CLAUDE.md or the task's instruction file.
+  memory: read-write
+    Same read, plus every run automatically gets a protocol appended to its prompt
+    telling it to WRITE this file back at the end (the sections below). It also
+    flags you if this file grows past ~60 lines (see "on length").
+
+THE WRITE PROTOCOL (what read-write injects each run)
+  At the END of a run, update the sections below:
+    - Last run:        replace with the current date + a 1-3 line summary.
+    - Carry-forward:   add open / follow-up items; remove ones now done.
+    - Issues encountered: log anything that went wrong or looked off.
+    - For the human:   anything needing your attention, else "nothing".
+  Never write secrets, tokens, or raw file contents here.
+
+ON LENGTH (deliberately NOT auto-trimmed)
+  We do not silently prune this file - useful history (especially "For the human"
+  and "Issues encountered") would be lost. Instead: when a run reads this file and
+  it is longer than ~60 lines, it flags that in the session, tells you the line
+  count, and asks which sections can be cleared - and keeps asking every run until
+  you resolve it. Clearing is a human decision.
+
+Copy this file to <project>/.agent-nexus/<session-name>-STATE.md and delete these
+comments (or keep them - they are harmless). Then set the session's `memory:`
+field. A read-write session will create the file itself on its first run if you
+would rather not seed it.
+-->
+
+## Last run
+(none yet)
+
+## Carry-forward
+- (open or follow-up items for the next run)
+
+## Facts / preferences
+- (durable things learned about this job; changes rarely)
+
+## Already handled
+- (things completed, so they are not redone)
+
+## Issues encountered
+- (anything that went wrong or looked off; or "none")
+
+## For the human
+- nothing
