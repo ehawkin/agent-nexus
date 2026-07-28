@@ -521,6 +521,8 @@ loaded but not checking in.
 | `/heal <name>` | Relaunch a session that has died |
 | `/launch <name>` | Start a tracked session that is not running |
 | `/rc <name>` | Check Remote Control for a session |
+| `/new <name> <project folder>` | Create a NEW registered session in that project (folders must already exist; `/projects` lists them) |
+| `/projects` | The project folders `/new` accepts |
 | `/approve <name>` | Take option 1 of the approval dialog waiting in that session |
 | `/deny <name>` | Dismiss that dialog (Escape) instead |
 | `/login <name>` | Run `/login` there and send the sign-in URL back to you |

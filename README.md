@@ -46,7 +46,7 @@ keyboard shortcut (`Cmd+Shift+B`) reconnects to all of them as VS Code editor ta
   heals, runs that never fired) - and, if you want, each run's report.
 - **Telegram control** - a second, optional bot you can send commands to:
   `/status`, `/sessions`, `/heal <name>`, `/launch <name>`, `/approve <name>`,
-  `/deny <name>`, `/login <name>`, `/code <code>`. It drives the TOOL, never
+  `/deny <name>`, `/new <name> <project>`, `/login <name>`, `/code <code>`. It drives the TOOL, never
   free text into a session, and it answers in about a second. That last part
   is the point: it exists for the moment your sessions are down and remote
   control is unreachable, so a slow reply would be useless. It also watches

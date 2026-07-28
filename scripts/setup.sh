@@ -521,6 +521,12 @@ case "$NEW_BR" in
   on|ON|y|Y|yes|YES) CFG_BOOT_RESTORE="on" ;;
   *) CFG_BOOT_RESTORE="off" ;;
 esac
+# Arming stamps the CURRENT boot as seen, so enabling never triggers a full
+# fleet relaunch on the next tick; only a REAL later reboot sweeps.
+if [ "$CFG_BOOT_RESTORE" = "on" ] && [ "$DEFAULT_BR" != "on" ]; then
+  boot_restore_mark_done 2>/dev/null
+  echo "  ${C_GREEN}✓${C_RESET} armed for the NEXT reboot (nothing relaunches now)"
+fi
 echo ""
 
 # ---------------------------------------------

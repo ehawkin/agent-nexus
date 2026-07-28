@@ -4431,6 +4431,14 @@ cmd_setup_telegram() {
   cdim "  something needs a human (logged-out Claude, failed heals, failed bus"
   cdim "  requests; throttled to once per 4h per condition). Takes about 5 minutes;"
   cdim "  you'll need Telegram open on your phone or desktop."
+  echo ""
+  if [ -f "$env_file" ] && [ -n "${CFG_NOTIFY_COMMAND:-}" ]; then
+    printf '  %-9s %sON%s - alerts are being delivered to Telegram\n' "status" "$C_OK" "$C_RESET"
+  elif [ -f "$env_file" ]; then
+    printf '  %-9s %sPARTIAL%s - credentials saved, but notify-command is empty, so nothing sends\n' "status" "$C_WARN" "$C_RESET"
+  else
+    printf '  %-9s %snot set up yet%s\n' "status" "$C_DIM" "$C_RESET"
+  fi
   panel_close
   echo ""
   if [ -f "$env_file" ]; then
@@ -4650,8 +4658,18 @@ cmd_setup_telegram_control() {
     echo "  Skipped. Install it any time: $(tool_cmd) install-telegram-daemon"
   fi
   echo ""
-  echo "  Every command, accepted or refused, is logged to:"
-  echo "    $(tgc_log_file)"
+  panel_open "Done — your control bot is live"
+  echo "  Try it from your phone right now:"
+  echo "    /help        the full command list"
+  echo "    /status      what is up, what is down"
+  echo "    /sessions    every session with its state"
+  echo "    /new <name> <project folder>   start a REGISTERED session remotely"
+  echo ""
+  cdim "  Only your chat id is obeyed; anything else is dropped silently and"
+  cdim "  audited. Every command, accepted or refused, is logged to:"
+  cdim "    $(tgc_log_file)"
+  panel_close
+  read -r -p "Press Enter to finish..." _
   return 0
 }
 
@@ -6775,7 +6793,12 @@ tgc_poll_raw() (
 # parse short or not at all, and then fail validation, which is the correct
 # outcome for input this surface would refuse anyway.
 tgc_updates_parse() {
-  printf '%s' "$1" | sed 's/{"update_id":/\
+  # tr -d '\n\r' FIRST: the splitter is line-based, so a response body that
+  # arrives with embedded newlines would shred one update across several
+  # chunks - update_id on one line, chat and text on others - and every field
+  # but uid parses empty. Seen live 2026-07-28 as "DENIED chat= text=" with no
+  # reply to /help. Flattening makes the shape of the body irrelevant.
+  printf '%s' "$1" | tr -d '\n\r' | sed 's/{"update_id":/\
 {"update_id":/g' | while IFS= read -r chunk || [ -n "$chunk" ]; do
     # `|| [ -n "$chunk" ]` because the JSON has no trailing newline, so the
     # LAST update arrives unterminated and a plain `read` would discard it.
@@ -6785,6 +6808,9 @@ tgc_updates_parse() {
     cid=$(printf '%s' "$chunk" | grep -o '"chat":{"id":-\{0,1\}[0-9]*' | head -1 | grep -o -- '-\{0,1\}[0-9]*$')
     txt=$(printf '%s' "$chunk" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p' | head -1)
     [ -n "$uid" ] || continue
+    # A chunk we could not pull a chat out of gets audited WITH a sample, so
+    # the next parse failure explains itself instead of logging empty fields.
+    [ -z "$cid" ] && tgc_audit "PARSE-MISS uid=$uid sample=$(printf '%.140s' "$chunk" | tr -d '\\\\"')"
     printf '%s\037%s\037%s\n' "$uid" "$cid" "$txt"
   done
 }
@@ -6877,6 +6903,8 @@ Agent Nexus commands:
 /sessions          every active and standby session with its status
 /heal <name>       relaunch a session that has died
 /launch <name>     start a tracked session that is not running
+/new <name> <project>   create a REGISTERED session in that project folder
+/projects          the project folders /new accepts
 /rc <name>         check remote control for a session
 /approve <name>    take option 1 of the approval dialog waiting there
 /deny <name>       dismiss that dialog (Escape) instead
@@ -6948,6 +6976,51 @@ $url"
 # apex, so the attacker's host can never reach the phone.
 tgc_extract_login_url() {
   grep -oE 'https://([A-Za-z0-9-]+\.)*(claude\.ai|anthropic\.com)(/[A-Za-z0-9./?=&_%~+-]*)?' | tail -1
+}
+
+# tgc_projects_text — the project folders /new accepts, straight from disk.
+tgc_projects_text() {
+  {
+    echo "Project folders under ${CFG_PROJECTS_ROOT/#$HOME/~}:"
+    find "$CFG_PROJECTS_ROOT" -mindepth 1 -maxdepth 1 -type d 2>/dev/null \
+      | sed 's|.*/||' | sort | head -60
+    echo ""
+    echo "Start one: /new <session-name> <project folder>"
+  } | head -c 3500
+}
+
+# tgc_do_new <name> <project words> — start a NEW session from the phone
+# (asked for 2026-07-28: sessions started from the Claude mobile app are not
+# the same kind of session). Reuses scheduler_spawn_session, the same guarded
+# create-register-wait path the schedule wizard uses: target lock, launch
+# flags from settings, UUID captured into the registry. The project must be
+# an EXISTING folder under projects-root (matched case-insensitively), so a
+# phone command can never mkdir anywhere.
+tgc_do_new() {
+  local n="$1" projin="$2" match="" m
+  local sock; sock=$(sched_tmux_socket)
+  if tmux -S "$sock" has-session -t "$n" 2>/dev/null; then
+    printf '%s' "A tmux session called '$n' is already running. /sessions shows it."
+    return 0
+  fi
+  parse_sessions_file
+  if tracked_lookup "$n"; then
+    printf '%s' "'$n' is already in the session list (${TL_TIER}). /launch $n starts it."
+    return 0
+  fi
+  while IFS= read -r -d '' m; do
+    if [ "$(printf '%s' "${m##*/}" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$projin" | tr '[:upper:]' '[:lower:]')" ]; then
+      match="$m"; break
+    fi
+  done < <(find "$CFG_PROJECTS_ROOT" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
+  if [ -z "$match" ]; then
+    printf '%s' "No project folder called '$projin' under ${CFG_PROJECTS_ROOT/#$HOME/~}. /projects lists them."
+    return 0
+  fi
+  action_log "session created from the phone: $n (project: ${match##*/})"
+  scheduler_spawn_session "$n" "$match" "${match##*/}" "${match##*/}" 2>&1
+  echo ""
+  echo "'$n' is up in ${match##*/}. /rc $n checks remote control; /sessions shows the fleet."
 }
 
 # tgc_do_approve <session> — answer a waiting approval dialog with option 1.
@@ -7100,6 +7173,34 @@ $RC_URL}"
     login)    tgc_audit "OK login $arg (code slot armed)"; body=$(tgc_do_login "$arg") ;;
     approve)  tgc_audit "OK approve $arg"; body=$(tgc_do_approve "$arg") ;;
     deny)     tgc_audit "OK deny $arg";    body=$(tgc_do_deny "$arg") ;;
+    projects) tgc_audit "OK projects"; body=$(tgc_projects_text) ;;
+    new)
+      # /new <name> <project folder>. The name must pass the same shape gate
+      # as every other session argument; the project may contain spaces but
+      # only filename-safe characters, and must exist on disk (checked in
+      # tgc_do_new against the real directory list).
+      local nn="${arg%% *}" pp=""
+      case "$arg" in *' '*) pp="${arg#* }" ;; esac
+      pp=$(printf '%s' "$pp" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+      if [ -z "$nn" ] || [ -z "$pp" ]; then
+        tgc_audit "REFUSED new: missing name or project"
+        tgc_send "/new needs both: /new <session-name> <project folder>. /projects lists the folders."
+        return 0
+      fi
+      if ! tgc_valid_session_name "$nn"; then
+        tgc_audit "REFUSED new: bad session name shape"
+        tgc_send "That session name will not work (letters, digits, dots, dashes; start with a letter or digit)."
+        return 0
+      fi
+      case "$pp" in
+        *[!A-Za-z0-9._\ -]*)
+          tgc_audit "REFUSED new: bad project shape"
+          tgc_send "That project name has characters I will not pass to the filesystem. /projects lists the real folders."
+          return 0 ;;
+      esac
+      tgc_audit "OK new $nn -> $(printf '%.40s' "$pp")"
+      tgc_send "Starting '$nn' in $pp... (launching Claude takes a minute; I will reply when it is up)"
+      body=$(tgc_do_new "$nn" "$pp") ;;
     code)
       # The code itself is NEVER audit-logged, only the fact of an attempt.
       if ! tgc_valid_login_code "$arg"; then
@@ -7209,6 +7310,11 @@ tgc_poll_once() {
       tgc_audit "RATE-CAP: more than $TGC_MAX_PER_TICK commands in one tick; the rest were skipped (still acknowledged)"
       continue
     fi
+    # No chat -> unroutable (already audited as PARSE-MISS with a sample).
+    # A chat but no text -> a sticker, photo, or membership event; nothing to
+    # obey and nothing worth replying to. Both still advance the offset above.
+    [ -z "$cid" ] && continue
+    [ -z "$txt" ] && { tgc_audit "IGNORED no-text update from chat=$cid"; continue; }
     tgc_handle "$cid" "$txt"
   done <<< "$(tgc_updates_parse "$raw")"
   [ "$maxid" -gt 0 ] && printf '%s\n' "$((maxid + 1))" > "$(tgc_offset_file)"
@@ -9634,6 +9740,15 @@ managed_edit_fields() {
   [ "$idx" -lt 0 ] && { echo "  '$pick' is not managed."; return 1; }
   local cur_h="${PKG_HEALS[$idx]}" cur_p="${PKG_PROFILES[$idx]}" cur_m="${PKG_MEMORIES[$idx]}"
   local cur_r="${PKG_RESETS[$idx]}" cur_c="${PKG_CKPTS[$idx]}"
+  # Who am I editing? The hub table truncates long names, so this screen
+  # states the full identity before asking anything (QA 2026-07-28).
+  local _mef_proj=""
+  tracked_lookup "$pick" && _mef_proj="$TL_PROJECT"
+  echo ""
+  panel_open "Automation settings: $pick"
+  printf '  %-9s %s\n' "project" "${_mef_proj:-?}"
+  [ -n "${PKG_DIRS[$idx]}" ] && printf '  %-9s %s\n' "where" "${PKG_DIRS[$idx]/#$HOME/~}"
+  panel_close
   local f; f=$(pick_option "Which setting for '$pick'? (current value shown; Esc backs out)" \
     "heal   (resume | fresh)   — now: $cur_h" \
     "permission-mode (bypass | auto | ask)   — now: $cur_p" \
@@ -9731,9 +9846,11 @@ cmd_settings() {
     _cfg_note "older ones are skipped (logged SKIP) so nothing fires absurdly late"
     local nc="${CFG_NOTIFY_COMMAND:-(off)}"
     _cfg_row "notify-command" "$nc"
-    _cfg_note "how the system texts YOU on trouble (logged-out Claude, failed heals,"
-    _cfg_note "unfired runs, failed bus requests). Run as: <command> \"<message>\"."
-    _cfg_note "Empty = off. Every attempt is also logged (Tools > Alerts and run reports)."
+    _cfg_note "HOW alerts reach you. When something needs a human (a session logged"
+    _cfg_note "out, a heal that failed, a run that never fired), the system runs this"
+    _cfg_note "command with the alert text as its argument; the command's job is to"
+    _cfg_note "deliver it (the Telegram guided setup below fills this in for you)."
+    _cfg_note "Empty = alerts only land in the logs (Tools > Alerts and run reports)."
     local nl="${CFG_NOTIFY_LEVEL:-failures}"
     _cfg_row "notify-level" "$nl"
     _cfg_note "failures = push only problems. all = also push each scheduled run's"
@@ -9785,7 +9902,19 @@ cmd_settings() {
           echo "  until you install it (menu: Schedule tasks > Install / reload the ticker)."
         fi
         v=$(pick_option "Auto-restore sessions after a reboot? (now: $br)" "[ keep current: $br ]" on off)
-        case "$v" in ""|"[ keep"*) ;; *) CFG_BOOT_RESTORE="$v" ;; esac ;;
+        case "$v" in ""|"[ keep"*) ;; *) CFG_BOOT_RESTORE="$v" ;; esac
+        # Arming must stamp the CURRENT boot as already seen, or the next tick
+        # reads this uptime's boot epoch as "an unseen boot" and relaunches the
+        # entire fleet minutes after you flip the switch (happened live
+        # 2026-07-28: 12 sessions woke, renamed, and resumed-from-summary,
+        # none of which the user asked for). Same no-retroactive-fire rule as
+        # creating a scheduled task. A REAL later reboot still sweeps.
+        if [ "$v" = "on" ] && [ "$br" != "on" ]; then
+          boot_restore_mark_done
+          action_log "boot-restore armed (current boot stamped as seen)"
+          echo "  Armed for the NEXT reboot. Nothing relaunches now; to bring"
+          echo "  everything up this minute instead, run: $(tool_cmd) boot-restore"
+        fi ;;
       catchup-hours*)
         echo "  Example: with 12, a Saturday-08:00 run still fires if you boot the Mini"
         echo "  Saturday morning, but not Tuesday night. Raise it if you'd rather have"
@@ -9805,7 +9934,6 @@ cmd_settings() {
       "Set up Telegram"*)
         cmd_setup_telegram
         parse_sessions_file
-        read -r -p "Press Enter to continue..." _
         continue ;;
       "Set up the agent-bus SSH door"*)
         echo "  The SSH door is SYSTEM-WIDE (one key per sending machine, installed"
@@ -9846,9 +9974,11 @@ cmd_settings() {
           all*)      CFG_NOTIFY_LEVEL="all" ;;
         esac ;;
       notify-command*)
-        echo "  A command the system runs to alert you, as: <command> \"<message>\"."
-        echo "  (For Telegram, the guided flow does everything: pick 'Set up Telegram"
-        echo "  notifications' in this menu, or run: $(tool_cmd) setup-telegram)"
+        echo "  This is HOW alerts reach you: the system runs this command with the"
+        echo "  alert text as its one argument, and the command delivers it (to"
+        echo "  Telegram, ntfy, email - anything scriptable)."
+        echo "  You almost never type one by hand: pick 'Set up Telegram"
+        echo "  notifications' in this menu and it is filled in for you."
         echo "  Ready-made Telegram sender (see its header for the 5-minute bot setup):"
         echo "      bash \"$SCRIPT_DIR/notify-telegram.sh\""
         echo "  Current: ${CFG_NOTIFY_COMMAND:-(off)}"
@@ -11104,12 +11234,56 @@ hub_group_actions() {
   return 0
 }
 
+
+# hub_apply_filter <kinds> — thin the built HUB_* arrays to the given kinds
+# (space-separated: active standby archived dormant new). The category filter
+# asked for in QA (2026-07-28): "just active", "just standby", or any
+# multi-select, on top of the view machinery.
+hub_apply_filter() {
+  [ -z "$1" ] && return 0
+  local kK=() kN=() kP=() kPa=() kI=() kS=() kA=() kG=() i
+  for i in "${!HUB_KINDS[@]}"; do
+    case " $1 " in *" ${HUB_KINDS[$i]} "*)
+      kK+=("${HUB_KINDS[$i]}"); kN+=("${HUB_NAMES[$i]}"); kP+=("${HUB_PROJS[$i]}")
+      kPa+=("${HUB_PATHS[$i]}"); kI+=("${HUB_IDS[$i]}"); kS+=("${HUB_STATUSES[$i]}")
+      kA+=("${HUB_AUTOS[$i]}"); kG+=("${HUB_GROUPS[$i]}") ;;
+    esac
+  done
+  HUB_KINDS=("${kK[@]}"); HUB_NAMES=("${kN[@]}"); HUB_PROJS=("${kP[@]}")
+  HUB_PATHS=("${kPa[@]}"); HUB_IDS=("${kI[@]}"); HUB_STATUSES=("${kS[@]}")
+  HUB_AUTOS=("${kA[@]}"); HUB_GROUPS=("${kG[@]}")
+  return 0
+}
+
+# hub_pick_filter — multi-select the kinds to show. Echoes the new filter
+# ("" = cleared); rc 1 = cancelled, keep what was there.
+hub_pick_filter() {
+  local picks
+  picks=$(pick_multi "Show only which kinds? (Tab or numbers mark several)" \
+    "active" "standby" "archived" \
+    "dormant — untracked saved conversations" \
+    "new — untracked tmux sessions" \
+    "[ clear the filter — back to the normal views ]") || return 1
+  case "$picks" in *"clear the filter"*) echo ""; return 0 ;; esac
+  local out="" line
+  while IFS= read -r line; do
+    case "$line" in
+      active) out="$out active" ;;
+      standby) out="$out standby" ;;
+      archived) out="$out archived" ;;
+      "dormant"*) out="$out dormant" ;;
+      "new"*) out="$out new" ;;
+    esac
+  done <<< "$picks"
+  echo "${out# }"
+}
+
 cmd_hub() {
   # The hub opens on the working set: Active + Standby. Archived and untracked
   # rows are one keypress away (Ctrl-A cycles), but they are not what you came
   # to look at, and an untracked list that grows with every /clear made the
   # default view unreadable (reported 2026-07-25).
-  local mode="project" view="work"
+  local mode="project" view="work" filter_kinds=""
   parse_sessions_file
   gather_project_summary
   hub_collect_dormant
@@ -11126,6 +11300,7 @@ cmd_hub() {
     parse_packages
     parse_scheduled_tasks 2>/dev/null
     hub_build_rows "$mode" "$view"
+    hub_apply_filter "$filter_kinds"
 
     local legend; legend=$(hub_legend_box)
     # Staleness suggester: sessions whose conversation is untouched >= stale-weeks
@@ -11190,18 +11365,19 @@ cmd_hub() {
     # to a narrow width; one long line was being cut off on the right.
     local grouped_by="project"; [ "$mode" = "state" ] && grouped_by="state"
     local viewline
-    viewline=$(printf 'VIEW   %s  ·  grouped by %s  ·  %d rows%s' \
-      "$(hub_view_label "$view")" "$grouped_by" "$n_rows" "${hidden_note:+  ·  $hidden_note}")
+    viewline=$(printf 'VIEW   %s  ·  grouped by %s  ·  %d rows%s%s' \
+      "$(hub_view_label "$view")" "$grouped_by" "$n_rows" "${filter_kinds:+  ·  FILTER: $filter_kinds}" "${hidden_note:+  ·  $hidden_note}")
     local keys1 keys2 keys3 keys4
     keys1="KEYS   Tab mark several  ·  Enter open  ·  Esc back"
     keys2="       type a number or part of a name to jump to it"
     keys3="       Ctrl-P group by project     Ctrl-S group by state"
     keys4="       Ctrl-A cycle view           Ctrl-B bulk actions menu"
+    keys5="       Ctrl-F filter by kind (multi-select: just active, just standby, ...)"
     if command -v fzf >/dev/null 2>&1; then
       local out
       out=$(printf '%s\n' "${rows[@]}" | fzf --exact --multi --prompt="sessions ($grouped_by) > " --height=80% --reverse --no-info \
-        --expect=ctrl-p,ctrl-s,ctrl-a,ctrl-b \
-        --header="$legend"$'\n'"$viewline"$'\n'"$keys1"$'\n'"$keys2"$'\n'"$keys3"$'\n'"$keys4"$'\n'"$colhdr")
+        --expect=ctrl-p,ctrl-s,ctrl-a,ctrl-b,ctrl-f \
+        --header="$legend"$'\n'"$viewline"$'\n'"$keys1"$'\n'"$keys2"$'\n'"$keys3"$'\n'"$keys4"$'\n'"$keys5"$'\n'"$colhdr")
       key=$(printf '%s\n' "$out" | sed -n 1p)
       # --multi: line 1 is the --expect key, every line after it is a marked
       # row. Mark several with Tab and the action menu applies to all of them
@@ -11219,6 +11395,14 @@ cmd_hub() {
         ctrl-s) mode="state"; continue ;;
         ctrl-a) view=$(hub_view_next "$view"); continue ;;
         ctrl-b) hub_group_actions "$stale_list" "$view" "$mode"; continue ;;
+        ctrl-f)
+          local _nf
+          if _nf=$(hub_pick_filter); then
+            filter_kinds="$_nf"
+            # A filter needs every category to exist before it can thin them.
+            [ -n "$filter_kinds" ] && view="all"
+          fi
+          continue ;;
       esac
       [ -z "$sel" ] && return 0
     else
@@ -11242,7 +11426,7 @@ cmd_hub() {
       echo ""
       echo "  p = group by project   s = group by state"
       echo "  a = cycle view (now: $(hub_view_label "$view"); next: $(hub_view_label "$(hub_view_next "$view")"))"
-      echo "  b = bulk actions menu  Enter = back"
+      echo "  f = filter by kind (multi-select)   b = bulk actions menu   Enter = back"
       echo ""
       local input
       read -r -p "Number to open (or p / s / a / b, Enter to go back): " input
@@ -11252,6 +11436,13 @@ cmd_hub() {
         s|S) mode="state"; continue ;;
         a|A) view=$(hub_view_next "$view"); continue ;;
         b|B) hub_group_actions "$stale_list" "$view" "$mode"; continue ;;
+        f|F)
+          local _nf
+          if _nf=$(PICK_NO_FZF=1 hub_pick_filter); then
+            filter_kinds="$_nf"
+            [ -n "$filter_kinds" ] && view="all"
+          fi
+          continue ;;
         b1) hub_bulk_archive; continue ;;
         b2) hub_bulk_reactivate; continue ;;
         b3) managed_remove_bulk; continue ;;
@@ -11334,7 +11525,13 @@ cmd_hub() {
     esac
     actions+=("[ ← back ]")
     local act
-    act=$(pick_option "'$name' ($kind, $status)" "${actions[@]}")
+    echo ""
+    panel_open "Session: $name"
+    printf '  %-9s %s\n' "project" "${proj:-?}"
+    [ -n "$path" ] && printf '  %-9s %s\n' "where" "${path/#$HOME/~}"
+    printf '  %-9s %s · %s\n' "state" "$kind" "$status"
+    panel_close
+    act=$(pick_option "'$name' — pick an action" "${actions[@]}")
     case "$act" in
       "Quit the menu"*)
         echo ""
