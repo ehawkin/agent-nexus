@@ -34,7 +34,7 @@ keyboard shortcut (`Cmd+Shift+B`) reconnects to all of them as VS Code editor ta
   control is unreachable, so a slow reply would be useless. It also watches
   for approval dialogs parked in unattended sessions (Chrome's per-site gate,
   an auto-mode pause), texts you the question, and lets you answer it from
-  the phone. Set up with `<machine>-nexus setup-telegram-control`.
+  the phone. Set up with `agent-nexus setup-telegram-control`.
 - **Self-updating** - the menu tells you when a newer version is on GitHub
   and updates itself on request.
 - **Health checks** - a doctor command that catches broken paths, dead
@@ -57,10 +57,11 @@ bash setup.sh
 source ~/.zshrc
 ```
 
-That's it. Now run the tool by typing its name (the prefix you chose in step 2,
-followed by `-sessions`), e.g. `<machine>-nexus`. If a first-time setup step is
-unfamiliar, the **Setup Guide** below walks through everything, including a fresh
-Mac from scratch.
+That's it. The command is `agent-nexus`, on every machine. (If you gave your
+machine a name during setup, you also get personal aliases like
+`rocky-nexus` as a convenience; they run the same tool.) If a first-time
+setup step is unfamiliar, the **Setup Guide** below walks through everything,
+including a fresh Mac from scratch.
 
 
 > **Scope of this page:** the session-manager basics and the laptop workflow.
@@ -112,16 +113,17 @@ bash setup.sh
 
 `setup.sh` will:
 
-1. Ask for your machine name, projects-root path, and a couple of behavior flags.
+1. Ask for your machine name (optional), projects-root path, and a couple of
+   behavior flags.
 2. Write them into a config block at the top of `sessions.md`.
-3. Optionally append a single zsh alias to `~/.zshrc` (e.g. `<machine>-nexus`
-   if you set the machine name to `rocky`).
+3. Optionally append the `agent-nexus` alias to `~/.zshrc` (plus personal
+   aliases like `rocky-nexus` if you named the machine).
 4. Print a VS Code `keybindings.json` snippet for you to add on your laptop.
 
 After `source ~/.zshrc` (or opening a new terminal), you can run:
 
 ```bash
-<machine>-nexus new
+agent-nexus new
 ```
 
 to start a new project session.
@@ -139,17 +141,17 @@ In VS Code on your laptop:
 Other subcommands:
 
 ```bash
-<machine>-nexus              # grouped interactive menu (Day-to-day / Recovery / etc.)
-<machine>-nexus sync         # Manage tracked sessions - Attach, Archive, Drop, Reconnect
-<machine>-nexus list         # All projects and sessions (incl. dormant); Attach / Revive / Reconnect
-<machine>-nexus restore      # Recreate every Active session in tmux (post-reboot)
-<machine>-nexus cycle        # Cycle /remote-control off-then-on on running sessions
-<machine>-nexus alerts       # What automation did + what it tried to tell you
-<machine>-nexus update       # Update the tool from GitHub (git installs)
-<machine>-nexus regen-tasks  # Regenerate tasks.json (housekeeping)
-<machine>-nexus backfill     # Scan ~/.claude/projects/ to fill missing UUIDs
-<machine>-nexus revive       # Recreate a single dormant Claude conversation
-<machine>-nexus help         # usage
+agent-nexus              # grouped interactive menu (Day-to-day / Recovery / etc.)
+agent-nexus sync         # Manage tracked sessions - Attach, Archive, Drop, Reconnect
+agent-nexus list         # All projects and sessions (incl. dormant); Attach / Revive / Reconnect
+agent-nexus restore      # Recreate every Active session in tmux (post-reboot)
+agent-nexus cycle        # Cycle /remote-control off-then-on on running sessions
+agent-nexus alerts       # What automation did + what it tried to tell you
+agent-nexus update       # Update the tool from GitHub (git installs)
+agent-nexus regen-tasks  # Regenerate tasks.json (housekeeping)
+agent-nexus backfill     # Scan ~/.claude/projects/ to fill missing UUIDs
+agent-nexus revive       # Recreate a single dormant Claude conversation
+agent-nexus help         # usage
 ```
 
 ### Per-session actions inside `sync` and `list`
@@ -182,10 +184,10 @@ your machine, Full setup from scratch.
 │  Laptop                │         │  Mac mini (always-on agent)      │
 │  ────────              │  Remote │  ─────────                       │
 │  VS Code               │   SSH   │  zsh + aliases                   │
-│   • keybindings.json   │ ──────► │   • <machine>-nexus new       │
-│   • Cmd+Shift+B        │         │   • <machine>-nexus sync      │
-│   • Cmd+Alt+R (picker) │         │   • <machine>-nexus hub       │
-│   • Cmd+Alt+E          │         │   • <machine>-nexus restore   │
+│   • keybindings.json   │ ──────► │   • agent-nexus new       │
+│   • Cmd+Shift+B        │         │   • agent-nexus sync      │
+│   • Cmd+Alt+R (picker) │         │   • agent-nexus hub       │
+│   • Cmd+Alt+E          │         │   • agent-nexus restore   │
 │                        │         │                                  │
 │                        │         │  scripts/                        │
 │                        │         │   • sessions.md  ◄── source of   │

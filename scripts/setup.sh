@@ -9,8 +9,8 @@
 #   - Asks for your machine name, projects-root path, and a couple of
 #     behavior flags. Writes them into the ## Config block of
 #     sessions.md.
-#   - Optionally appends three zsh aliases to ~/.zshrc, between markers
-#     so they're easy to remove later.
+#   - Optionally appends the agent-nexus alias (plus personal machine-name
+#     aliases) to ~/.zshrc, between markers so they're easy to remove later.
 #   - Prints a VS Code keybindings snippet for you to add on the laptop.
 #
 # Safe to re-run any time. Existing values are shown as defaults; press
@@ -117,13 +117,25 @@ alias_prefix() {
 build_alias_block() {
   local prefix
   prefix=$(alias_prefix)
-  cat <<EOF
+  # agent-nexus is THE command; every instruction the tool prints names it.
+  # A machine name adds personal convenience aliases on top (and keeps old
+  # muscle memory working on long-lived installs), but is never the identity.
+  if [ -n "$CFG_MACHINE_NAME" ] && [ "$prefix" != "agent" ]; then
+    cat <<EOF
 $ALIAS_BEGIN
+alias agent-nexus='bash "$SCRIPT_DIR/sessions.sh"'
+# personal aliases for this machine; same tool:
 alias ${prefix}-nexus='bash "$SCRIPT_DIR/sessions.sh"'
-# legacy name (pre-Agent-Nexus docs/instructions reference it); same tool:
 alias ${prefix}-sessions='bash "$SCRIPT_DIR/sessions.sh"'
 $ALIAS_END
 EOF
+  else
+    cat <<EOF
+$ALIAS_BEGIN
+alias agent-nexus='bash "$SCRIPT_DIR/sessions.sh"'
+$ALIAS_END
+EOF
+  fi
 }
 
 install_aliases() {
@@ -184,7 +196,7 @@ install_aliases() {
   } >> "$tmpfile"
 
   # Verify the result has the alias line.
-  if ! grep -qF "alias $(alias_prefix)-nexus=" "$tmpfile"; then
+  if ! grep -qF "alias agent-nexus=" "$tmpfile"; then
     echo "${C_YELLOW}!${C_RESET} Internal error: prepared file doesn't contain the alias. Backup preserved at $backup."
     rm -f "$tmpfile"
     return 1
@@ -194,8 +206,8 @@ install_aliases() {
   mv "$tmpfile" "$ZSHRC"
 
   # End-to-end verification: spawn a fresh zsh and check the alias loads.
-  if zsh -i -c "alias $(alias_prefix)-nexus" >/dev/null 2>&1; then
-    echo "${C_GREEN}✓${C_RESET} Alias '$(alias_prefix)-nexus' installed in $ZSHRC (plus legacy '$(alias_prefix)-sessions')"
+  if zsh -i -c "alias agent-nexus" >/dev/null 2>&1; then
+    echo "${C_GREEN}✓${C_RESET} Alias 'agent-nexus' installed in $ZSHRC$([ -n "$CFG_MACHINE_NAME" ] && printf " (plus '%s-nexus' / '%s-sessions')" "$(alias_prefix)" "$(alias_prefix)")"
     echo "  ${C_DIM}Backup: $backup${C_RESET}"
   else
     echo "${C_YELLOW}!${C_RESET} Verification failed — alias didn't load in a fresh zsh."
@@ -375,9 +387,9 @@ section_divider "$C_BLUE" "Configure (Enter on each prompt to keep the default)"
 
 # Machine name
 DEFAULT_MACHINE="$CFG_MACHINE_NAME"
-echo "Machine / agent name (used as the alias prefix)."
-echo "  Examples: rocky, jarvis, helm. 'rocky' makes the command rocky-nexus;"
-echo "  blank makes it agent-nexus."
+echo "Machine / agent name (optional)."
+echo "  The command is agent-nexus everywhere; a machine name ADDS personal"
+echo "  aliases like rocky-nexus / rocky-sessions beside it. Blank is fine."
 NEW_MACHINE=$(prompt_with_default "Machine name" "$DEFAULT_MACHINE")
 CFG_MACHINE_NAME="$NEW_MACHINE"
 echo ""
@@ -574,12 +586,12 @@ echo "session that can't be healed, a failed agent-bus request - the system can"
 echo "run a command to alert you (it gets the message as its argument, throttled"
 echo "to once per 4h per condition). A ready-made Telegram sender ships as"
 echo "notify-telegram.sh. Easiest path: AFTER setup, run the guided flow"
-echo "  <machine>-nexus setup-telegram"
+echo "  agent-nexus setup-telegram"
 echo "(it creates everything and tests it). Leave blank to keep notifications"
 echo "off; configure later in Settings > notify-command."
 echo ""
 echo "${C_BOLD}Two-way control from your phone${C_RESET} is a separate, optional step:"
-echo "  <machine>-nexus setup-telegram-control"
+echo "  agent-nexus setup-telegram-control"
 echo "That uses a SECOND bot and lets you send a fixed list of commands"
 echo "(/status, /sessions, /heal, /launch, /login, /code) to THIS TOOL - never"
 echo "free text into a session. It also installs an always-on poller so a"
@@ -693,7 +705,7 @@ section_divider "$C_GREEN" "Optional: agent-bus SSH door"
 echo "Lets an agent on ANOTHER machine hand tasks to a managed session here over"
 echo "SSH, restricted to only 'submit' and 'process-inbox' (nothing else). Skip"
 echo "this if you don't need cross-machine handoff yet; you can enable it later"
-echo "with:  <machine>-nexus install-bus-key"
+echo "with:  agent-nexus install-bus-key"
 echo ""
 if [ -f "$SCRIPT_DIR/bus-ssh-wrapper.sh" ]; then
   SETUP_BUSKEY=$(pick_yesno "Set up the agent-bus SSH door now?" "Yes - set it up" "No - later" no)
@@ -708,7 +720,7 @@ section_divider "$C_GREEN" "Optional: the scheduler + agent bus"
 echo "Installs one launchd agent that ticks every 15 minutes: it fires your timed"
 echo "tasks into sessions and drains the agent-bus queue. Skip if you only want the"
 echo "session manager for now; enable it later from the menu (Automation > Schedule"
-echo "tasks) or with:  <machine>-nexus install-scheduler"
+echo "tasks) or with:  agent-nexus install-scheduler"
 echo ""
 if declare -f cmd_install_scheduler >/dev/null 2>&1; then
   SCHED_DEFAULT="n"
@@ -720,7 +732,7 @@ if declare -f cmd_install_scheduler >/dev/null 2>&1; then
     cmd_install_scheduler
   elif [ "${CFG_BOOT_RESTORE:-off}" = "on" ]; then
     echo "${C_YELLOW}!${C_RESET} boot-restore is ON but the ticker isn't installed — it will never"
-    echo "  fire until you install it: <machine>-nexus install-scheduler"
+    echo "  fire until you install it: agent-nexus install-scheduler"
   fi
 fi
 

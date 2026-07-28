@@ -16,21 +16,21 @@ Three sections, in order of how you'll likely read them:
 agent bus - see section 4.)*
 
 These commands assume Section 2 has been run and the zsh aliases are installed.
-Replace `<machine>` with the prefix you chose during setup (default `agent`,
-so the command is `agent-nexus`).
+The command is `agent-nexus` on every machine. (Naming your machine during
+setup adds personal aliases like `rocky-nexus`; same tool.)
 
 ```
-<machine>-nexus               Show grouped menu (arrow-key + fzf if installed)
-<machine>-nexus new           Start a new tmux + Claude session, register it
-<machine>-nexus sync          Manage tracked sessions - Attach, Archive, Drop, Reconnect
-<machine>-nexus list          All projects and sessions (incl. dormant); Attach / Revive / Reconnect
-<machine>-nexus restore       Recreate every Active session in tmux (post-reboot)
-<machine>-nexus cycle         Cycle /remote-control off-then-on on running sessions
-<machine>-nexus update        Regenerate tasks.json from sessions.md (housekeeping)
-<machine>-nexus backfill  Scan ~/.claude/projects/ to fill missing UUIDs
-<machine>-nexus revive        Recreate a single dormant Claude conversation
-<machine>-nexus setup         Re-run setup (config + alias)
-<machine>-nexus help          Usage
+agent-nexus               Show grouped menu (arrow-key + fzf if installed)
+agent-nexus new           Start a new tmux + Claude session, register it
+agent-nexus sync          Manage tracked sessions - Attach, Archive, Drop, Reconnect
+agent-nexus list          All projects and sessions (incl. dormant); Attach / Revive / Reconnect
+agent-nexus restore       Recreate every Active session in tmux (post-reboot)
+agent-nexus cycle         Cycle /remote-control off-then-on on running sessions
+agent-nexus update        Regenerate tasks.json from sessions.md (housekeeping)
+agent-nexus backfill  Scan ~/.claude/projects/ to fill missing UUIDs
+agent-nexus revive        Recreate a single dormant Claude conversation
+agent-nexus setup         Re-run setup (config + alias)
+agent-nexus help          Usage
 
 tmux ls                         See what's running
 tmux attach -t <name>           Attach to a specific session
@@ -61,7 +61,7 @@ tmux attach -t <session-name>
 
 ### Creating a session manually (without the alias)
 
-The `<machine>-nexus new` command does all of this automatically. Use these
+The `agent-nexus new` command does all of this automatically. Use these
 bare commands if you want to do it step by step, or you're in a shell where
 the alias isn't available.
 
@@ -86,7 +86,7 @@ claude --dangerously-skip-permissions
 ```
 
 To register a manually-created session so it shows up in `Cmd+Shift+B`, run
-`<machine>-nexus sync` and toggle it Active.
+`agent-nexus sync` and toggle it Active.
 
 To enable computer-use MCP (browser/computer control) inside the Claude
 session - usually a separate decision per session - type:
@@ -145,7 +145,7 @@ an explanation and a proposed default you can accept or change):
 
 | Prompt | What to enter |
 |---|---|
-| Machine / agent name | A short prefix used for the aliases (e.g. `rocky`, `helm`, `jarvis`). Leave blank to default to `agent` (command `agent-nexus`). |
+| Machine / agent name | Optional. A short label (e.g. `rocky`, `helm`, `jarvis`) that adds personal aliases like `rocky-nexus` beside the canonical `agent-nexus` command. Blank is fine. |
 | Projects root | Absolute path to where your project subdirectories live. Defaults to `~/Projects` if it exists, else `~/Dropbox`. |
 | `tasks.json` path | Where VS Code's auto-generated tasks file lives. Default `~/.vscode/tasks.json` is right for most setups. |
 | Enable `/remote-control` | Whether to send `/remote-control` inside Claude after each new session. Default `no`. Only set to `yes` if you have that custom Claude Code command set up. |
@@ -161,7 +161,7 @@ you can remove it cleanly later. Idempotent - safe to re-run.
 
 After setup, open a new terminal (or `source ~/.zshrc`) and the alias works.
 
-### What `<machine>-nexus` does
+### What `agent-nexus` does
 
 One alias, multiple subcommands. Run with no arguments for a compact
 interactive menu of five groups. The five menu groups:
@@ -174,7 +174,7 @@ interactive menu of five groups. The five menu groups:
 | Tools and maintenance | Reconnect all (`restore`), boot-restore sweep (`boot-restore`), health check (`doctor`), remote-control cycle (`cycle`), regenerate tasks.json (`update`), fill missing UUIDs (`backfill`). |
 | Settings | Global defaults - permission-mode, chrome, remote-control, boot-restore, catchup-hours - plus the setup wizard. |
 
-Direct subcommand invocation works too: `<machine>-nexus hub`, `<machine>-nexus new`,
+Direct subcommand invocation works too: `agent-nexus hub`, `agent-nexus new`,
 etc. - useful for keyboard shortcuts or shell scripts. The pre-hub flows
 (`sync`, `list`, `managed`) still work as direct commands.
 
@@ -289,7 +289,7 @@ one-off  /absolute/somewhere/else               ...uuid
 session-i-stopped-using                         123456ab-...
 ```
 
-Edit by hand (`Cmd+Alt+E` opens it in VS Code) or via `<machine>-nexus sync`.
+Edit by hand (`Cmd+Alt+E` opens it in VS Code) or via `agent-nexus sync`.
 Lines starting with `#` are comments. Blank lines are ignored.
 
 **Path interpretation:**
@@ -303,13 +303,13 @@ present, `restore` uses `claude --resume <id>` to bring back that exact
 conversation. Without one, `restore` falls back to `claude --continue` (which
 resumes the most-recent conversation in that directory - risky if multiple
 sessions share a directory). `new` captures the id automatically; legacy
-entries can be backfilled with `<machine>-nexus backfill`.
+entries can be backfilled with `agent-nexus backfill`.
 
 Config keys:
 
 | Key | What it does |
 |---|---|
-| `machine-name` | Prefix used in the alias name (`<machine>-nexus`). |
+| `machine-name` | Optional label for this machine. Adds personal aliases (`<name>-nexus`, `<name>-sessions`) beside the canonical `agent-nexus`. |
 | `projects-root` | Directory `new` offers as a picker for "where should this session run?" Also the base for relative paths in Active/Archived lines. |
 | `tasks-file` | Where the updater writes the VS Code tasks file. |
 | `enable-remote-control` | If `yes`, `new` and `restore` send `/remote-control` inside Claude after each new session. Off by default. |
@@ -317,11 +317,11 @@ Config keys:
 | `enable-chrome` | If `yes` (default), sessions launch with `--chrome` (browser + computer-use tools). |
 | `boot-restore` | If `on`, the scheduler's first tick after a reboot automatically relaunches every Active + managed session (one-shot per boot). Needs the ticker installed, and auto-login on a headless Mac. Default `off`. |
 | `catchup-hours` | Missed-run window in hours (default 12): a scheduled run the machine slept through still fires if less than this late; older ones are skipped so nothing fires absurdly late. |
-| `notify-command` | Optional. A command run as `<command> "<message>"` to alert YOU when something needs a human: a session logged out of Claude, a managed session that can't be healed, a failed bus request (throttled to once per 4h per condition). `<machine>-nexus setup-telegram` walks the whole Telegram flow, from bot creation to a test message. Empty = off. |
+| `notify-command` | Optional. A command run as `<command> "<message>"` to alert YOU when something needs a human: a session logged out of Claude, a managed session that can't be healed, a failed bus request (throttled to once per 4h per condition). `agent-nexus setup-telegram` walks the whole Telegram flow, from bot creation to a test message. Empty = off. |
 | `keep-alive` | If `on` (default), every scheduler tick relaunches any managed session whose Claude died, so automation targets stay alive. Per-session override in `managed-sessions.md`. |
 
 **These launch settings are user-controllable.** Edit them from the menu
-("Session launch settings", or `<machine>-nexus settings`) or by re-running
+("Session launch settings", or `agent-nexus settings`) or by re-running
 `setup.sh`, which walks you through each one and explains its effect. On a fresh
 install the wizard proposes `permission-mode: auto` (the safer, classifier-checked
 mode) for the interactive sessions you create; unattended automation targets
@@ -331,7 +331,7 @@ absent from an older `sessions.md`, the tool behaves as it always did
 
 ### How `tasks.json` is structured
 
-You don't edit this file - `<machine>-nexus update` regenerates it. For each
+You don't edit this file - `agent-nexus update` regenerates it. For each
 Active session, there's a task that runs `tmux attach -t <name>` in a new editor
 terminal. There's also a `Reconnect All` task that depends on all of those (run
 in parallel) and is the default build task - that's what `Cmd+Shift+B` triggers.
@@ -471,7 +471,7 @@ Apply the VS Code settings from Section 2.
 ### 3.9 Create your first session
 
 ```bash
-<machine>-nexus new
+agent-nexus new
 ```
 
 Pick a name and a project directory. The script will create the tmux session, launch Claude, and attach.
@@ -487,7 +487,7 @@ to you. This is the other direction: a small, fixed set of commands you can send
 to the Mac.
 
 ```
-<machine>-nexus setup-telegram-control
+agent-nexus setup-telegram-control
 ```
 
 The guided flow creates a **second** bot, records exactly one chat as the only
@@ -502,8 +502,8 @@ a second. It is a LaunchAgent with `KeepAlive`, so it survives crashes and
 reboots.
 
 ```
-<machine>-nexus install-telegram-daemon      # start it (setup offers this too)
-<machine>-nexus uninstall-telegram-daemon    # stop and remove it
+agent-nexus install-telegram-daemon      # start it (setup offers this too)
+agent-nexus uninstall-telegram-daemon    # stop and remove it
 ```
 
 `doctor` warns if Telegram control is configured but the poller is missing, or
@@ -559,9 +559,9 @@ dialog is never texted twice; a new, different one alerts immediately.
 
 ## 4. Automation: scheduler, managed sessions, and the agent bus
 
-Beyond managing sessions, <machine>-nexus can run sessions on a schedule and let
+Beyond managing sessions, agent-nexus can run sessions on a schedule and let
 other machines hand them work. All of this is reachable from the main menu
-(`<machine>-nexus`) under the **Automation** group.
+(`agent-nexus`) under the **Automation** group.
 
 This section is the task-oriented quickstart (how to set each one up). For the
 internals and design rationale (firing/gating logic, the self-heal matrix, the
@@ -569,10 +569,10 @@ bus queue mechanics, the double-attach guard), the canonical reference is
 `SYSTEM-NOTES.md` §8 / §8b in the project root, so those details live in one
 place and are not restated here.
 
-> **Command prefix in the examples below:** they are written with `<machine>-nexus`
-> for readability. Substitute the prefix you chose during setup (`<machine>-nexus`).
+> **Command prefix in the examples below:** they are written with `agent-nexus`
+> for readability.
 > The one exception is the agent-bus SSH door: the sender must type the literal
-> `<machine>-nexus` there, because that is the fixed grammar the restricted wrapper
+> `agent-nexus` there, because that is the fixed grammar the restricted wrapper
 > matches (independent of your machine name).
 
 ### 4.1 The scheduler (timed prompts)
@@ -581,7 +581,7 @@ A single launchd LaunchAgent (`com.agent-nexus.ticker`) wakes every 15
 minutes and fires due tasks. Set it up once:
 
 ```
-<machine>-nexus schedule        # menu: Add a task, then "Install / reload the ticker"
+agent-nexus schedule        # menu: Add a task, then "Install / reload the ticker"
 ```
 
 Each task lives in `scheduled-tasks.md` as `id | schedule | prompt | enabled`
@@ -602,7 +602,7 @@ later, except the id, which run history is keyed by. Removing a task offers
 to remove its now-jobless session too (keep is the default; the saved
 conversation is never deleted).
 
-After a reboot, run `<machine>-nexus restore` to bring your sessions back, or
+After a reboot, run `agent-nexus restore` to bring your sessions back, or
 set `boot-restore: on` in Settings and the first tick after a boot does it
 for you; self-heal also recreates a missing target on the next fire.
 
@@ -616,7 +616,7 @@ receive scheduled tasks and agent-bus requests. Settings live in
 come from `sessions.md`).
 
 ```
-<machine>-nexus managed         # menu: Manage agent sessions
+agent-nexus managed         # menu: Manage agent sessions
 ```
 
 - **heal**: `resume` (default; relaunch + `--resume` the same conversation) or
@@ -628,7 +628,7 @@ come from `sessions.md`).
   block in §2) for this session. `bypass` is the default for automation targets because an
   unattended run must never stall at a prompt. Before switching a session to
   `auto`, generate its least-privilege allowlist:
-  `<machine>-nexus gen-session-settings <dir>` (this denies writes to the
+  `agent-nexus gen-session-settings <dir>` (this denies writes to the
   control plane so a compromised session can't escalate). Don't use `ask` for a
   session that receives scheduled/bus runs, it would hang waiting for input.
   (The old key name `profile` with value `legacy` is still accepted and reads as
@@ -654,10 +654,10 @@ come from `sessions.md`).
 - **checkpoint-compact**: `off` (default) or `on` - lets a long-running session
   shed its own context to cut token cost. When on, the session compacts at
   boundaries *it* declares: after committing a unit and updating its docs, it runs
-  `<machine>-nexus compact-checkpoint --next "<next step>"` and ends its turn; the
+  `agent-nexus compact-checkpoint --next "<next step>"` and ends its turn; the
   tool injects `/compact` (Claude Code can't self-trigger it), waits for it to
   settle, confirms the session is responsive, then re-prompts it to continue. Set it
-  up with `<machine>-nexus enable-checkpoint-compact <session>` (also in the
+  up with `agent-nexus enable-checkpoint-compact <session>` (also in the
   Automation menu), which installs the hooks and offers a compaction-safe
   documentation discipline for the project's `CLAUDE.md` (so nothing is lost when the
   history is compacted).
@@ -669,12 +669,12 @@ ways in: over SSH, or by dropping one Markdown file per request into a queue
 folder both machines can see. The ticker drains the queue every 15 minutes
 (the "sweep"); a direct poke delivers instantly.
 
-- **Local / SSH front door:** `<machine>-nexus submit --target <session> "<ask>"`
+- **Local / SSH front door:** `agent-nexus submit --target <session> "<ask>"`
   writes a request and processes it immediately.
 - **File front door:** write a request file into
   `<projects-root>/_agent-bus/inbox/` (format in `BUS-PROTOCOL.md`), then
-  optionally `ssh mini "<machine>-nexus process-inbox"` to trigger it now.
-- **Enabling the SSH door (one time):** run `<machine>-nexus install-bus-key`
+  optionally `ssh mini "agent-nexus process-inbox"` to trigger it now.
+- **Enabling the SSH door (one time):** run `agent-nexus install-bus-key`
   (the setup wizard also offers it). Paste the *public* key from the sending
   machine; it installs that key behind a restricted forced-command wrapper that
   permits only `submit` and `process-inbox`, then prints the exact SSH commands
@@ -750,8 +750,8 @@ tool itself from a local path outside the synced folder.
 ### 4.4 Checking on it
 
 ```
-<machine>-nexus bus-status      # queue counts, ticker + heartbeat, managed sessions
-<machine>-nexus doctor          # health check across sessions, scheduler, bus
+agent-nexus bus-status      # queue counts, ticker + heartbeat, managed sessions
+agent-nexus doctor          # health check across sessions, scheduler, bus
 ```
 
 Operational state (fire ledger, logs, locks) lives in the state dir: `~/.agent-nexus/` on new installs (installs from before the rename keep `~/.rocky-sessions/`)
@@ -762,8 +762,8 @@ Operational state (fire ledger, logs, locks) lives in the state dir: `~/.agent-n
 | Problem | Fix |
 |---|---|
 | Can't SSH in | Tailscale running on both machines? `ping <tailscale-ip>` from laptop. Mac mini awake (System Settings → Battery)? |
-| `Cmd+Shift+B` opens fewer sessions than expected | Some aren't running, OR aren't in `sessions.md`. Run `<machine>-nexus sync`. |
-| Just rebooted, `Cmd+Shift+B` does nothing | tmux server is gone after reboot. Run `<machine>-nexus restore` to recreate every Active session whose project path is stored, then `Cmd+Shift+B`. |
+| `Cmd+Shift+B` opens fewer sessions than expected | Some aren't running, OR aren't in `sessions.md`. Run `agent-nexus sync`. |
+| Just rebooted, `Cmd+Shift+B` does nothing | tmux server is gone after reboot. Run `agent-nexus restore` to recreate every Active session whose project path is stored, then `Cmd+Shift+B`. |
 | `Cmd+Shift+B` says "No build task to run found" | VS Code has no folder open as the workspace. `tasks.json` only loads when its parent `.vscode/` folder is in your workspace. Fix: **File → Open Folder** → your home directory (or wherever you set `tasks-file` to live), then `Cmd+Shift+B`. |
 | `Cmd+Shift+B` shows "Couldn't resolve dependent task '<name>'" for every session | SSH disconnected. Check the bottom-left status bar - if it says "Disconnected from SSH", click it to reconnect. tmux sessions on the agent machine are unaffected. |
 | Claude Desktop shows two entries for the same session (one broken, one working) | Auth on the underlying Claude Code process expired and prompted for `/login`. Claude Desktop saw it as "stopped responding"; after re-login + re-toggling `/remote-control` it registered the recovered connection as a NEW entry without reaping the old one. Fix: fully quit Claude Desktop (`Cmd+Q` on macOS) and reopen - usually flushes the stale entries. |
@@ -773,4 +773,4 @@ Operational state (fire ledger, logs, locks) lives in the state dir: `~/.agent-n
 | Compound `cd && git` prompts | Per-project. Add `"Bash(cd * && git *)"` to that project's `.claude/settings.local.json` allow list. |
 | VS Code Remote SSH won't connect | `Cmd+Shift+P` → "Remote-SSH: Kill VS Code Server on Host", then reconnect. |
 | `brew install` fails as the agent user | Switch to admin: `su - <admin-user>`, then install. |
-| tmux sessions vanished | Mac mini rebooted. tmux sessions don't survive reboots. Run `<machine>-nexus restore` to recreate them in bulk; Claude Code will offer to resume each from `.claude/` history. |
+| tmux sessions vanished | Mac mini rebooted. tmux sessions don't survive reboots. Run `agent-nexus restore` to recreate them in bulk; Claude Code will offer to resume each from `.claude/` history. |

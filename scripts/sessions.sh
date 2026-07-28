@@ -4,7 +4,7 @@
 # sessions.sh
 #
 # Single entry point for managing Claude Code + tmux sessions on
-# the agent machine. Run via the alias <machine>-nexus
+# the agent machine. Run via the alias agent-nexus
 # (set up by setup.sh).
 #
 # Subcommands:
@@ -213,10 +213,12 @@ else
   SCHEDULE_STATE_DIR="$HOME/.agent-nexus"
 fi
 
-# The product is "Agent Nexus"; the command is "<machine>-nexus" (agent-nexus
-# when no machine name is configured). Use tool_cmd in every user-facing string
-# that names the command, so the text matches what THIS machine actually types.
-tool_cmd() { printf '%s-nexus' "${CFG_MACHINE_NAME:-agent}"; }
+# The product is "Agent Nexus" and the command is "agent-nexus", everywhere.
+# It USED to be "agent-nexus": two dynamic naming schemes in the docs at
+# once, which read as two different tools (QA 2026-07-27). machine-name lives
+# on as an OPTIONAL extra alias setup offers (rocky-nexus etc.), but every
+# instruction the tool prints names the one canonical command.
+tool_cmd() { printf 'agent-nexus'; }
 SCHEDULE_STATE_DIR_OLD="$HOME/.claude/rocky-scheduler"  # pre-2026-07-04 location
 SCHEDULE_LOG="$SCHEDULE_STATE_DIR/tick.log"
 SCHED_CATCHUP_MAX=43200                                 # 12h: fire a missed run up to 12h late, else skip+mark handled
@@ -5310,7 +5312,7 @@ write_scheduled_tasks_template() {
   cat > "$SCHEDULED_TASKS_FILE" <<'TPL'
 # Scheduled Tasks — Agent Nexus scheduler
 #
-# Managed by the schedule menu (`<machine>-nexus schedule`). You can also edit by hand.
+# Managed by the schedule menu (`agent-nexus schedule`). You can also edit by hand.
 # Lines starting with '#' and blank lines are ignored.
 #
 # Tasks are grouped under a `### <target-session>` header — the tmux session
@@ -7368,6 +7370,65 @@ cmd_tick() {
 }
 
 # --- launchd install --------------------------------------------------------
+# cmd_migrate_identifiers — one-shot: move a legacy install (~/.rocky-sessions,
+# com.rocky.* launchd labels) to the product names (~/.agent-nexus,
+# com.agent-nexus.*), so every machine ends up identical instead of this one
+# carrying the historical names forever (drift concern, 2026-07-27). Safe by
+# construction: the ticker and poller are unloaded BEFORE the state dir moves
+# (nothing can write mid-move), the move is a same-volume atomic mv, and the
+# reinstalls run in FRESH processes so they resolve the new names. A session
+# filing a run report mid-migration also resolves fresh, and after the mv the
+# legacy dir no longer exists, so it lands in the new one.
+# Seam: MIGRATE_SKIP_LAUNCHD=1 skips the launchctl half (tests).
+cmd_migrate_identifiers() {
+  local old="$HOME/.rocky-sessions" new="$HOME/.agent-nexus"
+  if [ ! -d "$old" ]; then
+    echo "Nothing to migrate: $old does not exist (this install already uses the new names)."
+    return 0
+  fi
+  if [ -e "$new" ]; then
+    echo "ERROR: $new already exists; refusing to merge two state dirs. Resolve by hand." >&2
+    return 1
+  fi
+  echo ""
+  panel_open "Migrating identifiers to the product names"
+  local had_ticker=0 had_poller=0
+  if [ "${MIGRATE_SKIP_LAUNCHD:-}" != "1" ]; then
+    if launchctl list 2>/dev/null | grep -q "com.rocky.sessions-ticker"; then had_ticker=1; fi
+    if launchctl list 2>/dev/null | grep -q "com.rocky.telegram-control"; then had_poller=1; fi
+    # Unload FIRST: nothing may write into the dir while it moves.
+    launchctl unload "$HOME/Library/LaunchAgents/com.rocky.sessions-ticker.plist" 2>/dev/null
+    launchctl unload "$HOME/Library/LaunchAgents/com.rocky.telegram-control.plist" 2>/dev/null
+    rm -f "$HOME/Library/LaunchAgents/com.rocky.sessions-ticker.plist" \
+          "$HOME/Library/LaunchAgents/com.rocky.telegram-control.plist"
+    echo "  Unloaded the legacy LaunchAgents."
+  fi
+  if ! mv "$old" "$new"; then
+    echo "  ERROR: could not move $old to $new. The legacy agents are unloaded;" >&2
+    echo "  re-run this command after fixing the move, or reinstall with install-scheduler." >&2
+    panel_close
+    return 1
+  fi
+  echo "  Moved $old -> $new (ledger, logs, backups, credentials: all of it)."
+  if [ "${MIGRATE_SKIP_LAUNCHD:-}" != "1" ]; then
+    # Fresh processes: they resolve the NEW names (the old dir is gone now).
+    if [ "$had_ticker" -eq 1 ]; then
+      bash "$SCRIPT_SELF" install-scheduler >/dev/null 2>&1 \
+        && echo "  Reinstalled the ticker as com.agent-nexus.ticker." \
+        || echo "  ! Ticker reinstall failed - run: $(tool_cmd) install-scheduler" >&2
+    fi
+    if [ "$had_poller" -eq 1 ]; then
+      bash "$SCRIPT_SELF" install-telegram-daemon >/dev/null 2>&1 \
+        && echo "  Reinstalled the Telegram poller as com.agent-nexus.telegram-control." \
+        || echo "  ! Poller reinstall failed - run: $(tool_cmd) install-telegram-daemon" >&2
+    fi
+  fi
+  cdim "  This shell still holds the old paths; new invocations resolve the new"
+  cdim "  ones. Verify with: $(tool_cmd) doctor"
+  panel_close
+  return 0
+}
+
 cmd_install_scheduler() {
   local plist="$HOME/Library/LaunchAgents/$SCHED_PLIST_LABEL.plist"
   mkdir -p "$HOME/Library/LaunchAgents" "$SCHEDULE_STATE_DIR"
@@ -7691,6 +7752,13 @@ sched_add_task() {
   SCHED_IDS+=("$id"); SCHED_SESSIONS+=("$target"); SCHED_SCHEDULES+=("$sc")
   SCHED_PROMPTS+=("$prompt"); SCHED_ENABLED+=("yes")
   write_scheduled_tasks
+  # A brand-new task must wait for its NEXT scheduled time. Without this, an
+  # occurrence inside the 12h catch-up window (e.g. an 08:00 task created at
+  # 09:00) counts as "missed" and fires within 15 minutes of creation, which
+  # nobody creating a task expects (QA 2026-07-27). Stamping the most recent
+  # past occurrence as handled closes the window that existed before the task.
+  local _occ; _occ=$(occurrence_epoch "$sc")
+  [ -n "$_occ" ] && sched_set_last_fired "$id" "$_occ"
   echo ""
   echo "Added task '$id' → session '$target', schedule '$sc'."
   echo "  Prompt: $prompt"
@@ -7871,6 +7939,10 @@ sched_edit_task() {
           if [ -n "$(occurrence_epoch "$sc")" ]; then
             SCHED_SCHEDULES[$idx]="$sc"
             write_scheduled_tasks
+            # Same no-retroactive-catch-up rule as creation: a schedule set to
+            # a time inside the last 12h must not fire NOW; only its next
+            # occurrence counts.
+            sched_set_last_fired "$id" "$(occurrence_epoch "$sc")"
             echo "  Saved. Next run: $(sched_fmt_epoch "$(sched_next_epoch "$sc")")"
             break
           fi
@@ -8002,7 +8074,7 @@ write_packages_template() {
 #               scheduler re-captures it into sessions.md automatically. Pair with
 #               memory:read-write to keep durable notes across the wipe.
 #   checkpoint-compact: when on, the session compacts its OWN context at boundaries
-#     it declares by running `<machine>-nexus compact-checkpoint` (after committing +
+#     it declares by running `agent-nexus compact-checkpoint` (after committing +
 #     updating docs, then ending its turn). The tool queues /compact and re-prompts it
 #     to continue. Set up fully with `enable-checkpoint-compact <session>` (installs
 #     hooks + the compaction-safe CLAUDE.md discipline). Cuts token cost on long runs.
@@ -11334,10 +11406,10 @@ cmd_hub() {
 
 cmd_help() {
   cat <<'USAGE'
-Usage: <machine>-nexus <command>    (Agent Nexus)
+Usage: agent-nexus <command>    (Agent Nexus)
 
 With no command, shows an interactive menu (uses arrow keys + fzf if installed,
-falls back to a numbered prompt otherwise). Run '<machine>-nexus' to open the menu.
+falls back to a numbered prompt otherwise). Run 'agent-nexus' to open the menu.
 
 Commands, ordered by how often you'll use them:
 
@@ -11414,7 +11486,7 @@ Commands, ordered by how often you'll use them:
 
   revive   Recreate a single dormant Claude conversation as a tmux
            session. Usually invoked from inside 'list'; also callable
-           directly with a UUID: <machine>-nexus revive <uuid>.
+           directly with a UUID: agent-nexus revive <uuid>.
 
 ── Automation ──
 
@@ -11624,7 +11696,7 @@ _show_menu_once() {
   local choice
   # Parallel arrays defining the menu: label, category, dispatch key, description.
   # The user-facing label can be long and friendly; the dispatch key stays
-  # short for `<machine>-nexus <key>` invocation from the terminal.
+  # short for `agent-nexus <key>` invocation from the terminal.
   local labels=() categories=() cmds=() descs=()
   # When a newer version is known to be waiting, updating is one keypress away
   # right here (besides Settings + Setup and Tools).
@@ -11904,6 +11976,10 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     schedule)
       shift
       cmd_schedule "$@"
+      ;;
+    migrate-identifiers)
+      shift
+      cmd_migrate_identifiers "$@"
       ;;
     tick)
       shift
