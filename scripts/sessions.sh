@@ -233,7 +233,7 @@ TGC_PLIST_LABEL="com.agent-nexus.telegram-control"      # the always-on Telegram
 [ -f "$HOME/Library/LaunchAgents/com.rocky.telegram-control.plist" ] && TGC_PLIST_LABEL="com.rocky.telegram-control"
 
 # ---- Agent bus (see "Agent Bus - Design Spec.md"; built Phase 1, 2026-07-04) ----
-MANAGED_FILE="${AGENT_NEXUS_MANAGED_FILE:-$DATA_DIR/managed-sessions.md}"   # per-session automation settings (managed agent sessions)
+MANAGED_FILE="${AGENT_NEXUS_MANAGED_FILE:-$DATA_DIR/managed-sessions.md}"   # per-session automation settings (auto-managed sessions)
 LEGACY_PACKAGES_FILE="$DATA_DIR/packages.md"            # pre-2026-07-04 name (auto-migrated)
 BUS_LOG="$SCHEDULE_STATE_DIR/bus.log"                   # arrival/delivery audit + rate-cap source
 BUS_SIZE_CAP=262144                                     # request file cap (256 KB)
@@ -1319,7 +1319,7 @@ dormant_group_pick() {
   for m in $members; do
     opts+=("last used $(relative_time "${m##*:}")  ·  ${m%%:*}")
   done
-  opts+=("[ back ]")
+  opts+=("[ ← back ]")
   {
     echo ""
     echo "'$title' has $(dormant_group_count "$members") saved conversations. Each /clear (or fresh"
@@ -1328,7 +1328,7 @@ dormant_group_pick() {
   } >&2
   local pick
   pick=$(pick_option "Which conversation? (newest first)" "${opts[@]}")
-  if [ -z "$pick" ] || [ "$pick" = "[ back ]" ]; then return 1; fi
+  if [ -z "$pick" ] || [ "$pick" = "[ ← back ]" ]; then return 1; fi
   printf '%s' "${pick##* }"
 }
 
@@ -2398,13 +2398,13 @@ cmd_new() {
   local auto_choice
   auto_choice=$(pick_option "Set up automation for this session?" \
     "No — just a normal session (add automation later in the Sessions hub)" \
-    "Make it a managed agent session — self-heals, keep-alive, can receive bus requests" \
+    "Make it a auto-managed session — self-heals, keep-alive, can receive bus requests" \
     "Managed + schedule a task now — also add a timed prompt that fires into it")
   case "$auto_choice" in
     "Make it a managed"*|"Managed + schedule"*)
       if pkg_register "$SESSION_NAME"; then
         echo ""
-        echo "  '$SESSION_NAME' is now a managed agent session (default policies:"
+        echo "  '$SESSION_NAME' is now a auto-managed session (default policies:"
         echo "  heal on death, permission-mode bypass, keep-alive on)."
         echo "  Fine-tune policies any time: Sessions hub > this session > Automation."
       fi
@@ -2666,11 +2666,11 @@ offer_unmanage_for() {
   echo "  ${#hits[@]} of these are also MANAGED agent sessions: ${hits[*]}"
   echo "  Left managed, they'd still self-heal / boot-restore / accept scheduled+bus work."
   local ans
-  ans=$(pick_yesno "Un-manage them too (remove their automation settings)?" \
+  ans=$(pick_yesno "Turn OFF their auto-manage too (remove their automation settings)?" \
     "Yes — un-manage them" "No — keep them managed" yes)
   case "$ans" in
     yes) pkg_remove_by_name "${hits[@]}" && echo "  → un-managed: ${hits[*]}" ;;
-    *) echo "  Kept managed. (Un-manage later: Sessions hub > Several at once > Un-manage.)" ;;
+    *) echo "  Kept managed. (Turn it off later: Sessions hub > Several at once > Turn OFF auto-manage.)" ;;
   esac
 }
 
@@ -3719,11 +3719,11 @@ cmd_list() {
         "Other / Unmapped" "$ORPHAN_DORMANT_COUNT")")
     fi
     options+=("[+ Add new project directory ]")
-    options+=("[ Back to main menu ]")
+    options+=("[ ← back ]")
 
     local picked
     picked=$(pick_option "Pick a project (selecting one shows ALL its sessions, including dormant)" "${options[@]}")
-    if [ -z "$picked" ] || [[ "$picked" == "[ Back"* ]]; then
+    if [ -z "$picked" ] || [[ "$picked" == *"← back"* ]]; then
       return 0
     fi
     if [[ "$picked" == "[+ Add new project"* ]]; then
@@ -3999,25 +3999,25 @@ cmd_list() {
     local rsess=""
     case "$s_state" in
       dormant)
-        actions=("Revive — create tmux session + claude --resume" "Show full info" "[ back ]")
+        actions=("Revive — create tmux session + claude --resume" "Show full info" "[ ← back ]")
         ;;
       running)
         # Already live — offer to attach to its tmux session, never to resume it.
         case "${SE_NOTES[$idx]}" in "live: "*) rsess="${SE_NOTES[$idx]#live: }";; esac
         if [ -n "$rsess" ]; then
-          actions=("Attach — it's already running; open tmux session '$rsess'" "Show full info" "[ back ]")
+          actions=("Attach — it's already running; open tmux session '$rsess'" "Show full info" "[ ← back ]")
         else
           echo "This conversation is running OUTSIDE tmux (a Terminal launch or an"
           echo "orphan), so there's no tmux session to attach to. Find that process"
           echo "directly (ps) — do NOT revive it, or you'll double-attach the file."
-          actions=("Show full info" "[ back ]")
+          actions=("Show full info" "[ ← back ]")
         fi
         ;;
       active|archived)
         if [ "$sess_running" = "1" ]; then
-          actions=("Attach now — drop me into the Claude Code session (in tmux)" "Show full info" "[ back ]")
+          actions=("Attach now — drop me into the Claude Code session (in tmux)" "Show full info" "[ ← back ]")
         else
-          actions=("Reconnect — recreate tmux + resume the Claude conversation" "Show full info" "[ back ]")
+          actions=("Reconnect — recreate tmux + resume the Claude conversation" "Show full info" "[ ← back ]")
         fi
         ;;
     esac
@@ -6050,7 +6050,7 @@ pkg_register() {
   local name="$1"
   [ -f "$MANAGED_FILE" ] || write_packages_template
   parse_packages
-  pkg_lookup "$name" && { echo "'$name' is already a managed agent session"; return 1; }
+  pkg_lookup "$name" && { echo "'$name' is already a auto-managed session"; return 1; }
   printf '
 ### %s
 heal: resume
@@ -7889,7 +7889,7 @@ sched_offer_automation() {
   parse_packages
   if ! pkg_lookup "$t"; then
     local mk
-    mk=$(pick_yesno "Make '$t' a managed agent session? (self-heals when it dies, and gets the automation settings: reset, memory, permission mode)" \
+    mk=$(pick_yesno "Make '$t' a auto-managed session? (self-heals when it dies, and gets the automation settings: reset, memory, permission mode)" \
       "Yes - manage it (recommended for automation targets)" \
       "No - leave it a plain session" yes)
     [ "$mk" = "yes" ] || return 0
@@ -7900,7 +7900,7 @@ sched_offer_automation() {
   local rv
   rv=$(pick_yesno "Review '$t' automation settings now? (reset clear/compact, memory, permission mode, keep-alive)" \
     "Yes - walk through them" \
-    "No - keep them; edit any time via Automation > Managed agent sessions, or here via Edit a task" yes)
+    "No - keep them; edit any time via Automation > Auto-managed sessions, or here via Edit a task" yes)
   [ "$rv" = "yes" ] || return 0
   # One field per pass; the editor's cancel row (rc 2) ends the review.
   while managed_edit_fields "$t"; do :; done
@@ -7992,7 +7992,7 @@ cmd_schedule() {
       "Run a task now (test fire)" \
       "Install / reload the ticker (launchd)" \
       "Scheduler status & log" \
-      "Back to main menu")
+      "[ ← back ]")
     case "$action" in
       "List"*)    ;;
       "Add"*)     sched_add_task ;;
@@ -8002,7 +8002,7 @@ cmd_schedule() {
       "Run"*)     sched_run_now ;;
       "Install"*) cmd_install_scheduler ;;
       "Scheduler status"*) sched_status ;;
-      "Back"*|"") return 0 ;;
+      *"← back"*|"") return 0 ;;
     esac
   done
 }
@@ -8024,7 +8024,7 @@ cmd_schedule() {
 # --- packages.md ------------------------------------------------------------
 write_packages_template() {
   cat > "$MANAGED_FILE" <<'TPL'
-# Managed agent sessions - Agent Nexus automation settings
+# Auto-managed sessions - Agent Nexus automation settings
 #
 # A MANAGED AGENT SESSION is just one of your sessions (from sessions.md) that
 # you have switched automation on for. Scheduled tasks and agent-bus requests
@@ -8486,7 +8486,7 @@ cmd_submit() {
   [ -z "$target" ] && { echo "ERROR: usage: submit --target <session> [--from <name>] [--instruction-file <f>] '<ask>'" >&2; return 1; }
   [ -z "$ask" ] && [ -z "$ifile" ] && { echo "ERROR: an ask or --instruction-file is required" >&2; return 1; }
   parse_packages
-  pkg_lookup "$target" || { echo "ERROR: '$target' is not a managed agent session (see managed-sessions.md)" >&2; return 1; }
+  pkg_lookup "$target" || { echo "ERROR: '$target' is not a auto-managed session (see managed-sessions.md)" >&2; return 1; }
   bus_dirs_ensure
   local b; b=$(bus_dir)
   # id: UTC seconds + slug from the ask + rand4 (collision-free, FIFO-ish)
@@ -8580,7 +8580,7 @@ cmd_bus_status() {
   parse_packages
   echo ""
   if [ "${#PKG_NAMES[@]}" -gt 0 ]; then
-    chead "Managed agent sessions"
+    chead "Auto-managed sessions"
     local sock i; sock=$(sched_tmux_socket)
     for i in "${!PKG_NAMES[@]}"; do
       local st="down"
@@ -9054,7 +9054,7 @@ cmd_bus_door() {
     printf '  %-22s : %s%s%s\n' "installed sender keys" "$C_ACCENT" "$n_keys" "$C_RESET"
     panel_close
     local act
-    act=$(pick_option "SSH door"       "Install a new sender key — guided; shows the sender-side steps, then waits for the key"       "Show sender instructions again — re-print the block to hand an installed sender"       "List installed sender keys"       "[ back ]")
+    act=$(pick_option "SSH door"       "Install a new sender key — guided; shows the sender-side steps, then waits for the key"       "Show sender instructions again — re-print the block to hand an installed sender"       "List installed sender keys"       "[ ← back ]")
     case "$act" in
       "Install a new sender key"*)
         cmd_install_bus_key; read -r -p "Press Enter to continue..." _ ;;
@@ -9107,7 +9107,7 @@ Make the Mac drain its queue right now (e.g. after dropping a file in its inbox)
 
 Rules: only those two commands are permitted; anything else is rejected and
 logged. The request text may contain spaces but NO shell metacharacters or
-newlines ( ; & | \` \$ < > ( ) \\ ). <target> must be a managed agent session.
+newlines ( ; & | \` \$ < > ( ) \\ ). <target> must be a auto-managed session.
 ------------------------------------------------------------------------
 EOF
 }
@@ -9470,13 +9470,13 @@ cmd_enable_checkpoint_compact() {
   return 0
 }
 
-# --- Manage agent sessions (the packages menu, in plain language) -----------
+# --- Auto-managed sessions (the packages menu, in plain language) -----------
 cmd_managed() {
   migrate_managed
   while true; do
     parse_packages
     echo ""
-    panel_open "Managed agent sessions"
+    panel_open "Auto-managed sessions"
     cdim "  A session you have switched automation ON for: it self-heals if it dies,"
     cdim "  has a permission mode + memory policy, and can receive scheduled tasks"
     cdim "  and agent-bus requests. It is just one of your sessions, flagged managed."
@@ -9499,14 +9499,15 @@ cmd_managed() {
     fi
     panel_close
     local act
-    act=$(pick_option "Manage agent sessions" \
-      "Make a session managed" "Edit one" "Un-manage one (settings only)" \
-      "Un-manage several… (bulk)" "Back to main menu")
+    act=$(pick_option "Auto-managed sessions" \
+      "Turn ON auto-manage for a session" "Edit one" \
+      "Turn OFF auto-manage for one (the session itself stays)" \
+      "Turn OFF for several… (bulk)" "[ ← back ]")
     case "$act" in
-      "Make a session managed") managed_add ;;
-      "Edit one")               managed_edit ;;
-      "Un-manage one"*)         managed_remove ;;
-      "Un-manage several"*)     managed_remove_bulk ;;
+      "Turn ON"*)         managed_add ;;
+      "Edit one")         managed_edit ;;
+      "Turn OFF auto-manage for one"*) managed_remove ;;
+      "Turn OFF for several"*)         managed_remove_bulk ;;
       *) return 0 ;;
     esac
   done
@@ -9521,7 +9522,7 @@ managed_add() {
     return
   fi
   opts+=("[ cancel ]")
-  local pick; pick=$(pick_option "Which session should become a managed agent session?" "${opts[@]}")
+  local pick; pick=$(pick_option "Which session should become a auto-managed session?" "${opts[@]}")
   { [ -z "$pick" ] || [ "$pick" = "[ cancel ]" ]; } && return
   pkg_register "$pick" && echo "  '$pick' is now managed (defaults heal=resume, permission-mode=bypass, memory=none). Edit to change."
 }
@@ -9530,7 +9531,7 @@ managed_remove() {
   parse_packages
   [ "${#PKG_NAMES[@]}" -eq 0 ] && { echo "  (none to un-manage)"; return; }
   local opts=() i; for i in "${!PKG_NAMES[@]}"; do opts+=("${PKG_NAMES[$i]}"); done; opts+=("[ cancel ]")
-  local pick; pick=$(pick_option "Un-manage which? (the session stays; only its automation settings go)" "${opts[@]}")
+  local pick; pick=$(pick_option "Turn OFF auto-manage for which? (the session stays; only its automation settings go)" "${opts[@]}")
   { [ -z "$pick" ] || [ "$pick" = "[ cancel ]" ]; } && return
   pkg_remove_by_name "$pick" && echo "  '$pick' is no longer managed."
   managed_offer_archive "$pick"
@@ -9662,8 +9663,8 @@ cmd_settings() {
     echo ""
     panel_open "Settings + Setup"
     cdim "  The defaults applied whenever a session is launched, restored, or revived."
-    cdim "  Managed agent sessions can override permission-mode per-session (see"
-    cdim "  'Manage agent sessions'). Stored in the ## Config block of sessions.md."
+    cdim "  Auto-managed sessions can override permission-mode per-session (see"
+    cdim "  'Auto-managed sessions'). Stored in the ## Config block of sessions.md."
     echo ""
     # _cfg_row <name> <value> — the setting's name and its CURRENT value, the
     # value accented so a scan of this screen answers "what is it set to" first
@@ -9935,7 +9936,7 @@ cmd_rename() {
 # =============================================================================
 # --- Sessions hub: one view of every session (active/archived/dormant/new) ---
 # Replaces the split between "Manage tracked sessions", "All projects and
-# sessions", and "Manage agent sessions" in the menu. The old flows remain
+# sessions", and "Auto-managed sessions" in the menu. The old flows remain
 # callable directly (sync / list / managed) as an escape hatch.
 
 # hub_auto_badges <name> -> terse automation summary for the AUTOMATION column.
@@ -10349,15 +10350,15 @@ hub_automation() {
         "Edit a setting (heal / permission-mode / memory / reset / checkpoint-compact)" \
         "Set up checkpoint-compaction fully (hooks + CLAUDE.md discipline)" \
         "Generate least-privilege allowlist (needed before permission-mode auto)" \
-        "Un-manage (remove automation settings; session stays)" \
-        "[ back ]")
+        "Turn OFF auto-manage (remove automation settings; session stays)" \
+        "[ ← back ]")
       case "$act" in
         "Edit a setting"*) managed_edit_fields "$name" ;;
         "Set up checkpoint"*) cmd_enable_checkpoint_compact "$name" ;;
         "Generate least-privilege"*)
           if [ -n "$path" ]; then cmd_gen_session_settings "$path"
           else echo "  (no stored path for '$name'; run: $(tool_cmd) gen-session-settings <dir>)"; fi ;;
-        "Un-manage"*)
+        "Turn OFF auto-manage"*)
           pkg_remove_by_name "$name" && echo "  '$name' is no longer managed."
           managed_offer_archive "$name"
           return 0 ;;
@@ -10368,7 +10369,7 @@ hub_automation() {
       echo "self-heal (relaunch if its Claude dies), lets scheduled tasks and agent-bus"
       echo "requests target it, and unlocks memory/reset/checkpoint policies."
       local mk
-      mk=$(pick_option "Automation for '$name'" "Make managed (defaults: heal=resume, permission-mode=bypass)" "[ back ]")
+      mk=$(pick_option "Automation for '$name'" "Make managed (defaults: heal=resume, permission-mode=bypass)" "[ ← back ]")
       case "$mk" in
         "Make managed"*) pkg_register "$name" && echo "  '$name' is now managed." ;;
         *) return 0 ;;
@@ -10942,9 +10943,9 @@ cmd_registry_backups() {
       sz=$(printf '%s' "$line" | cut -d'|' -f4)
       labels+=("$(printf '%-19s %-10s %s bytes' "$when" "$n" "$sz")")
     done
-    labels+=("[ back ]")
+    labels+=("[ ← back ]")
     local pick; pick=$(pick_option "Restore which version?" "${labels[@]}")
-    { [ -z "$pick" ] || [ "$pick" = "[ back ]" ]; } && return 0
+    { [ -z "$pick" ] || [ "$pick" = "[ ← back ]" ]; } && return 0
     local idx=-1 i
     for i in "${!labels[@]}"; do [ "${labels[$i]}" = "$pick" ] && { idx=$i; break; }; done
     { [ "$idx" -lt 0 ] || [ "$idx" -ge ${#rows[@]} ]; } && return 0
@@ -10994,9 +10995,9 @@ cmd_trash() {
       mb=$(printf '%s' "$line" | cut -d'|' -f5)
       labels+=("$(printf '%-17s %-8s %s' "$when" "${mb}MB" "${uuid:0:8} · ${slug:0:40}")")
     done
-    labels+=("[ back ]")
+    labels+=("[ ← back ]")
     local pick; pick=$(pick_option "Restore which conversation?" "${labels[@]}")
-    [ -z "$pick" ] || [ "$pick" = "[ back ]" ] && return 0
+    [ -z "$pick" ] || [ "$pick" = "[ ← back ]" ] && return 0
     local idx=-1 i
     for i in "${!labels[@]}"; do [ "${labels[$i]}" = "$pick" ] && { idx=$i; break; }; done
     [ "$idx" -lt 0 ] && return 0
@@ -11033,7 +11034,7 @@ hub_group_actions() {
     "Remote control — check / turn ON / turn OFF (all running or a picked subset)"
   )
   [ "$n_stale" -gt 0 ] && opts+=("Review $n_stale stale session(s) — untouched ≥ ${CFG_STALE_WEEKS:-3} weeks; standby or archive")
-  opts+=("$view_lbl" "$mode_lbl" "[ back ]")
+  opts+=("$view_lbl" "$mode_lbl" "[ ← back ]")
   local act; act=$(pick_option "Several sessions at once · view options" "${opts[@]}")
   case "$act" in
     "Launch several"*)     hub_bulk_launch ;;
@@ -11282,7 +11283,7 @@ cmd_hub() {
       dormant)
         actions+=("Revive — recreate as a tmux session, resuming this conversation" "Info") ;;
     esac
-    actions+=("[ back ]")
+    actions+=("[ ← back ]")
     local act
     act=$(pick_option "'$name' ($kind, $status)" "${actions[@]}")
     case "$act" in
@@ -11316,7 +11317,7 @@ cmd_hub() {
           "not running"*) fix_opts+=("Reconnect — recreate tmux + resume the conversation") ;;
           running*)       fix_opts+=("Attach now") ;;
         esac
-        fix_opts+=("[ back ]")
+        fix_opts+=("[ ← back ]")
         local fix; fix=$(pick_option "Fix for '$name'?" "${fix_opts[@]}")
         case "$fix" in
           "Relaunch Claude"*)
@@ -11490,8 +11491,8 @@ Commands, ordered by how often you'll use them:
 
 ── Automation ──
 
-  managed   Manage agent sessions — turn one of your sessions into a
-            "managed agent session" (it self-heals if it dies, has a
+  managed   Auto-managed sessions — turn one of your sessions into a
+            "auto-managed session" (it self-heals if it dies, has a
             permission mode + memory policy, and can receive scheduled tasks
             and agent-bus requests). Settings live in managed-sessions.md, keyed
             by the session's own name.
@@ -11537,7 +11538,7 @@ Commands, ordered by how often you'll use them:
 
   bus-status
             One-screen status for the agent bus: queue counts (inbox/processing/
-            done/failed), the managed agent sessions, and the ticker + heartbeat.
+            done/failed), the auto-managed sessions, and the ticker + heartbeat.
 
   doctor    Health check across sessions, the scheduler, and the bus; prints
             problems (missing UUIDs, stale ticker, queue backlog) and exits
@@ -11827,14 +11828,14 @@ cmd_automation_menu() {
   while true; do
     local act
     act=$(pick_option "Automation — timed tasks + the agent bus" \
-      "Schedule tasks — timed prompts fired into a session; the 'ticker' (a background job checking every 15 min) fires them" \
-      "Managed agent sessions — the sessions automation may act on: self-heal, keep-alive, policies" \
-      "Agent bus status — queue, managed sessions, ticker + heartbeat at a glance" \
+      "Scheduled tasks — WHEN things run: fire a prompt into any session on a schedule" \
+      "Auto-managed sessions — HOW a session behaves under automation: self-heal, keep-alive, permission mode, memory, reset" \
+      "Agent bus status — queue, auto-managed sessions, ticker + heartbeat at a glance" \
       "Agent-bus SSH door — install a sender key, or re-show a sender's setup instructions" \
-      "[ back to main menu ]")
+      "[ ← back ]")
     case "$act" in
-      "Schedule tasks"*)   cmd_schedule ;;
-      "Managed agent"*)    cmd_managed ;;
+      "Scheduled tasks"*)  cmd_schedule ;;
+      "Auto-managed"*)     cmd_managed ;;
       "Agent bus status"*) cmd_bus_status; read -r -p "Press Enter to continue..." _ ;;
       "Agent-bus SSH door"*) cmd_bus_door ;;
       *) return 0 ;;
@@ -11855,7 +11856,7 @@ cmd_tools_menu() {
       "Update Agent Nexus — pull the latest version from GitHub" \
       "Regenerate tasks.json — rebuild VS Code's task list (rarely needed by hand)" \
       "Find missing session UUIDs — scan ~/.claude/projects/ to fill blanks" \
-      "[ back to main menu ]")
+      "[ ← back ]")
     case "$act" in
       "Reconnect all"*)    cmd_restore; read -r -p "Press Enter to continue..." _ ;;
       "Boot-restore"*)     cmd_boot_restore; read -r -p "Press Enter to continue..." _ ;;

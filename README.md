@@ -6,6 +6,10 @@ self-healing, and controllable from your laptop or phone. A small set of bash
 scripts plus a setup guide; no runtime dependencies beyond tmux and Claude
 Code itself.
 
+Licensed [PolyForm Noncommercial 1.0.0](LICENSE): free to use, modify, and
+share for any noncommercial purpose; commercial rights are reserved by
+SilverApps LLC.
+
 The idea: each project gets its own named tmux session running Claude Code.
 Sessions stay alive on the Mac mini regardless of whether your laptop is open. From your laptop, a single
 keyboard shortcut (`Cmd+Shift+B`) reconnects to all of them as VS Code editor tabs.
@@ -66,7 +70,7 @@ including a fresh Mac from scratch.
 
 > **Scope of this page:** the session-manager basics and the laptop workflow.
 > The tool also has three automation layers, not covered here: a **scheduler**
-> (fire prompts into a session on a schedule), **managed agent sessions**
+> (fire prompts into a session on a schedule), **auto-managed sessions**
 > (self-heal + a per-session permission mode + a durable `STATE.md` memory + a
 > per-run `/compact`-or-`/clear` reset policy), and an **agent bus** (other machines hand
 > off work via a shared queue). For the full feature set see `PITCH.md`; for
@@ -86,7 +90,7 @@ including a fresh Mac from scratch.
                                              sync        interactive picker
                                              restore     recreate active sessions in tmux
                                              schedule    timed tasks + install the ticker
-                                             managed     managed agent session settings
+                                             managed     auto-managed session settings
                                              bus-status  queue + scheduler + heartbeat
                                              doctor      health check
                                              alerts      run reports + alert log

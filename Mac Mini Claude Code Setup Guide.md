@@ -12,7 +12,7 @@ Three sections, in order of how you'll likely read them:
 
 ## 1. Daily use
 
-*(For the automation layer - scheduled jobs, managed agent sessions, and the
+*(For the automation layer - scheduled jobs, auto-managed sessions, and the
 agent bus - see section 4.)*
 
 These commands assume Section 2 has been run and the zsh aliases are installed.
@@ -606,9 +606,9 @@ After a reboot, run `agent-nexus restore` to bring your sessions back, or
 set `boot-restore: on` in Settings and the first tick after a boot does it
 for you; self-heal also recreates a missing target on the next fire.
 
-### 4.2 Managed agent sessions
+### 4.2 Auto-managed sessions
 
-A **managed agent session** is just one of your sessions that you've switched
+A **auto-managed session** is just one of your sessions that you've switched
 automation on for: it self-heals if its Claude dies (relaunches and resumes the
 same conversation), has its own permission mode and a memory policy, and can
 receive scheduled tasks and agent-bus requests. Settings live in
@@ -616,7 +616,7 @@ receive scheduled tasks and agent-bus requests. Settings live in
 come from `sessions.md`).
 
 ```
-agent-nexus managed         # menu: Manage agent sessions
+agent-nexus managed         # menu: Auto-managed sessions
 ```
 
 - **heal**: `resume` (default; relaunch + `--resume` the same conversation) or
@@ -682,7 +682,7 @@ folder both machines can see. The ticker drains the queue every 15 minutes
   (`ssh-keygen -t ed25519`); you only install the `.pub` it gives you. This is a
   machine-level grant: once enabled, that machine's agent can target *any*
   managed session, same as the file door.
-- Requests may only target a registered managed agent session. Delivery treats
+- Requests may only target a registered auto-managed session. Delivery treats
   the request as untrusted input, heals a dead target first, and never types
   over a working session or a human at the keyboard.
 
