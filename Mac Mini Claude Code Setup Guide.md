@@ -557,20 +557,19 @@ waiting dialog it texts you the question itself, so you decide with the words
 in front of you. Answer with `/approve <name>` or `/deny <name>`. The same
 dialog is never texted twice; a new, different one alerts immediately.
 
-## 4. Automation: scheduler, managed sessions, and the agent bus
+## 4. Automation: scheduler, auto-managed sessions, and the agent bus
 
 Beyond managing sessions, agent-nexus can run sessions on a schedule and let
 other machines hand them work. All of this is reachable from the main menu
-(`agent-nexus`) under the **Automation** group.
+(`agent-nexus`) under the **Automation** group. Two ideas, kept separate on
+purpose: **scheduled tasks** decide WHEN things run; **auto-managed sessions**
+decide HOW a session behaves under automation (self-heal, keep-alive,
+permission mode, memory, reset policy).
 
-This section is the task-oriented quickstart (how to set each one up). For the
-internals and design rationale (firing/gating logic, the self-heal matrix, the
-bus queue mechanics, the double-attach guard), the canonical reference is
-`SYSTEM-NOTES.md` §8 / §8b in the project root, so those details live in one
-place and are not restated here.
-
-> **Command prefix in the examples below:** they are written with `agent-nexus`
-> for readability.
+This section is the task-oriented quickstart (how to set each one up). The
+deeper internals (firing and gating logic, the self-heal matrix, the bus queue
+mechanics) are documented in the comments of `scripts/sessions.sh` next to the
+code they describe.
 > The one exception is the agent-bus SSH door: the sender must type the literal
 > `agent-nexus` there, because that is the fixed grammar the restricted wrapper
 > matches (independent of your machine name).

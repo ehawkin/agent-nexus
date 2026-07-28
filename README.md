@@ -22,7 +22,7 @@ keyboard shortcut (`Cmd+Shift+B`) reconnects to all of them as VS Code editor ta
 - **Scheduled tasks** - fire a prompt into any session on a schedule
   ("Sat 08:00", "daily 05:30"). Missed runs catch up within a window you
   set; every run files a one-line report of what it did.
-- **Self-healing automation** - managed sessions are relaunched
+- **Self-healing automation** - auto-managed sessions are relaunched
   automatically if they die (after a reboot too, with boot-restore on),
   resuming the same Claude conversation.
 - **Agent bus** - other machines/agents can drop requests into your
@@ -64,18 +64,17 @@ source ~/.zshrc
 That's it. The command is `agent-nexus`, on every machine. (If you gave your
 machine a name during setup, you also get personal aliases like
 `rocky-nexus` as a convenience; they run the same tool.) If a first-time
-setup step is unfamiliar, the **Setup Guide** below walks through everything,
-including a fresh Mac from scratch.
+setup step is unfamiliar, the [**Setup Guide**](Mac%20Mini%20Claude%20Code%20Setup%20Guide.md) walks
+through everything, including a fresh Mac from scratch.
 
 
 > **Scope of this page:** the session-manager basics and the laptop workflow.
 > The tool also has three automation layers, not covered here: a **scheduler**
 > (fire prompts into a session on a schedule), **auto-managed sessions**
 > (self-heal + a per-session permission mode + a durable `STATE.md` memory + a
-> per-run `/compact`-or-`/clear` reset policy), and an **agent bus** (other machines hand
-> off work via a shared queue). For the full feature set see `PITCH.md`; for
-> setup of the automation see §4 of the Setup Guide; for how it works see
-> `SYSTEM-NOTES.md`. (`PITCH.md` and `SYSTEM-NOTES.md` live at the project root.)
+> per-run `/compact`-or-`/clear` reset policy), and an **agent bus** (other
+> machines hand off work via a shared queue). All three are set up in
+> [section 4 of the Setup Guide](Mac%20Mini%20Claude%20Code%20Setup%20Guide.md).
 
 ## What's in this repo
 
@@ -172,7 +171,7 @@ When you pick a session inside `Manage tracked sessions` or `All projects and se
 
 **Attach** = enter an existing running session. **Reconnect** = bring a tracked-but-stopped session back to life (single-session equivalent of `restore`). **Revive** = pick up a forgotten conversation from `~/.claude/projects/` history that was never in your tracked list.
 
-If you don't have the prerequisites yet, the **Setup Guide** walks through everything
+If you don't have the prerequisites yet, the [**Setup Guide**](Mac%20Mini%20Claude%20Code%20Setup%20Guide.md) walks through everything
 including Tailscale, SSH keys, VS Code Remote SSH config, and tmux setup.
 
 ## Read this
