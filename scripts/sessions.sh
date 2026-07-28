@@ -483,6 +483,7 @@ parse_sessions_file() {
   CFG_STALE_WEEKS=""
   CFG_UPDATE_REQUIRE_SIGNED=""
   CFG_ACTION_LOG=""
+  CFG_RESUME_MODE=""
   ACTIVE_NAMES=()
   ACTIVE_PATHS=()
   ACTIVE_IDS=()
@@ -545,6 +546,7 @@ parse_sessions_file() {
             stale-weeks) CFG_STALE_WEEKS="$value" ;;
             update-require-signed) CFG_UPDATE_REQUIRE_SIGNED="$value" ;;
             action-log) CFG_ACTION_LOG="$value" ;;
+            resume-mode) CFG_RESUME_MODE="$value" ;;
             digest) CFG_DIGEST="$value" ;;
             digest-time) CFG_DIGEST_TIME="$value" ;;
             digest-weekly-day) CFG_DIGEST_WEEKLY_DAY="$value" ;;
@@ -888,6 +890,7 @@ keep-alive: ${CFG_KEEP_ALIVE:-on}
 stale-weeks: ${CFG_STALE_WEEKS:-3}
 update-require-signed: ${CFG_UPDATE_REQUIRE_SIGNED:-off}
 action-log: ${CFG_ACTION_LOG:-on}
+resume-mode: ${CFG_RESUME_MODE:-as-is}
 digest: ${CFG_DIGEST:-off}
 digest-time: ${CFG_DIGEST_TIME:-08:00}
 digest-weekly-day: ${CFG_DIGEST_WEEKLY_DAY:-Mon}
@@ -5203,6 +5206,13 @@ cmd_activity_log() {
   local nl_body; nl_body=$(grep -v '^#' "$nl" 2>/dev/null | tail -30)
   if [ -n "$nl_body" ]; then printf '%s\n' "$nl_body"; else cdim "  (nothing yet)"; fi
   echo ""
+  if tgc_enabled 2>/dev/null; then
+    chead "Telegram control audit (recent)"
+    cdim "  Every command, accepted or refused; DENIED = a chat that is not yours."
+    local tg_body; tg_body=$(grep -v '^#' "$(tgc_log_file)" 2>/dev/null | tail -12)
+    if [ -n "$tg_body" ]; then printf '%s\n' "$tg_body"; else cdim "  (nothing yet)"; fi
+    echo ""
+  fi
   chead "Recent actions"
   cdim "  State-changing things a human did in the menus (setting: action-log)."
   local al_body; al_body=$(tail -20 "$(action_log_path)" 2>/dev/null)
@@ -5611,10 +5621,28 @@ perm_prompt_match() {
   return 0
 }
 
+# dialog_shape_match — the BROAD matcher: any numbered choice dialog at all
+# (a highlighted first option + a second option), excluding the two launch
+# dialogs automation answers itself. perm_prompt_match is the subset with
+# ask-language; anything matching here but NOT there is a dialog the system
+# does not recognize - exactly what the unknown-modal watch alerts on, and
+# what /approve and /deny may answer (the human decides, question in hand).
+dialog_shape_match() {
+  local cap; cap=$(cat)
+  [ -n "$cap" ] || return 1
+  printf '%s\n' "$cap" | grep -q 'Resume from summary' && return 1
+  printf '%s\n' "$cap" | grep -q 'trust this folder' && return 1
+  printf '%s\n' "$cap" | grep -q '❯ 1\.' || return 1
+  printf '%s\n' "$cap" | grep -qE '(^|[[:space:]])2\.[[:space:]]' || return 1
+  printf '%s\n' "$cap" | grep -E '(^|[[:space:]])(❯ )?[0-9]\.[[:space:]]|\?' \
+    | grep -v '^[[:space:]]*$' | tail -8 | cut -c1-200
+  return 0
+}
+
 # pane_permission_prompt <session> — is a dialog waiting in this pane NOW?
 pane_permission_prompt() {
   local sess="$1" sock="${2:-$(sched_tmux_socket)}"
-  tmux -S "$sock" capture-pane -p -t "$sess" 2>/dev/null | tail -25 | perm_prompt_match
+  tmux -S "$sock" capture-pane -p -t "$sess" 2>/dev/null | tail -25 | dialog_shape_match
 }
 
 # permwatch_check — scan every tracked session with a live pane; push each
@@ -5644,7 +5672,9 @@ permwatch_check() {
       # is trusted data, but a path separator in one must not become a path.
       f="$d/$(printf '%s' "$n" | tr -c 'A-Za-z0-9._-' '_')"
       if ! tmux -S "$sock" has-session -t "$n" 2>/dev/null; then rm -f "$f"; continue; fi
-      if snip=$(pane_permission_prompt "$n" "$sock"); then
+      local cap_t
+      cap_t=$(tmux -S "$sock" capture-pane -p -t "$n" 2>/dev/null | tail -25)
+      if snip=$(printf '%s\n' "$cap_t" | perm_prompt_match); then
         h=$(printf '%s' "$snip" | cksum | awk '{print $1}')
         [ "$h" = "$(cat "$f" 2>/dev/null)" ] && continue
         printf '%s\n' "$h" > "$f"      # stamp BEFORE sending: races dedupe, not double-text
@@ -5653,6 +5683,17 @@ $snip
 
 Answer from the control bot: /approve $n  or  /deny $n"
         sched_log "PERMPROMPT $n: approval dialog pushed to phone"
+      elif snip=$(printf '%s\n' "$cap_t" | dialog_shape_match); then
+        # A dialog the system does NOT recognize (no ask-language): claude
+        # grew a new modal, or something unusual is on screen. Same dedupe.
+        h=$(printf '%s' "$snip" | cksum | awk '{print $1}')
+        [ "$h" = "$(cat "$f" 2>/dev/null)" ] && continue
+        printf '%s\n' "$h" > "$f"
+        notify_now "permprompt-$n" "'$n' is showing a dialog the system does not recognize (possibly a new claude modal):
+$snip
+
+/approve $n takes option 1, /deny $n dismisses it. If this looks like a new dialog type, automation may need to learn it."
+        sched_log "PERMPROMPT $n: UNRECOGNIZED dialog pushed to phone"
       else
         rm -f "$f"
       fi
@@ -5819,7 +5860,11 @@ claude_pid_for_session() {
 # hours on 2026-07-25 (NOT the transcript's byte size, which was the first
 # theory: a 4MB copy resumed fine while a 1MB one did not, because what
 # triggers the prompt is AGE + TOKEN COUNT).
-resume_choice_visible() { grep -q 'Resume from summary'; }
+# The RENDERED dialog only: cursor marker + option number + phrase, on one
+# line. Matching the phrase alone also matched a conversation that merely
+# MENTIONS the modal (or a command echo containing it), and automation would
+# type an answer into a pane that asked no question (found 2026-07-28).
+resume_choice_visible() { grep -q '❯ 1\. Resume from summary'; }
 
 # wait_for_tui answers that modal. Option 1 (resume from summary) is the right
 # unattended answer: it is Claude's own recommendation and it avoids re-billing
@@ -5861,12 +5906,30 @@ wait_for_tui() {
     # readiness test looks for, so checking readiness first reports a session
     # that is actually blocked as ready.
     if [ "$answered" -eq 0 ] && printf '%s\n' "$cap" | resume_choice_visible; then
-      tmux -S "$sock" send-keys -t "$sess" Enter
-      sched_log "RESUME-PROMPT $sess: answered 'Resume from summary' (long conversation; unattended)"
+      # Which way to answer is a SETTING now (resume-mode, QA 2026-07-28):
+      # summarizing on resume is a compaction the human did not ask for, so
+      # the default is "as-is" - full context, exactly as it was left. The
+      # cost: a huge conversation may reload slowly, or not at all (the heal
+      # budget then expires and the convsize alert says why). "summary" keeps
+      # the old always-summarize behavior.
+      case "${CFG_RESUME_MODE:-as-is}" in
+        summary)
+          tmux -S "$sock" send-keys -t "$sess" Enter
+          sched_log "RESUME-PROMPT $sess: answered 'Resume from summary' (resume-mode: summary)"
+          # Tell this tick's delivery that the context is already summarized,
+          # so a reset:compact policy doesn't immediately compact a summary.
+          RESUME_SUMMARIZED="$sess" ;;
+        *)
+          # "2" picks Resume-as-is; some renders want Enter to confirm - send
+          # it only if the modal survived, or it would land in the composer.
+          tmux -S "$sock" send-keys -t "$sess" -l "2"
+          sleep 2; t=$((t + 2))
+          if tmux -S "$sock" capture-pane -p -t "$sess" 2>/dev/null | resume_choice_visible; then
+            tmux -S "$sock" send-keys -t "$sess" Enter
+          fi
+          sched_log "RESUME-PROMPT $sess: answered 'Resume as-is' (resume-mode: as-is; full context kept)" ;;
+      esac
       [ -n "${WAIT_TUI_PROGRESS:-}" ] && printf '[answered the resume prompt]'
-      # Tell this tick's delivery that the context is already summarized, so a
-      # reset:compact policy doesn't immediately compact a summary.
-      RESUME_SUMMARIZED="$sess"
       answered=1
       sleep 3; t=$((t + 3)); continue
     fi
@@ -6731,7 +6794,7 @@ TGC_LOGIN_TTL="${TGC_LOGIN_TTL:-600}"      # a pending login expires after 10 mi
 
 tgc_env_file() { printf '%s' "${TELEGRAM_CONTROL_ENV_FILE:-$SCHEDULE_STATE_DIR/telegram-control.env}"; }
 tgc_enabled()  { [ -f "$(tgc_env_file)" ]; }
-tgc_log_file()    { printf '%s/telegram-control.log' "$SCHEDULE_STATE_DIR"; }
+tgc_log_file()    { printf '%s' "${TGC_LOG_FILE_OVERRIDE:-$SCHEDULE_STATE_DIR/telegram-control.log}"; }
 tgc_offset_file() { printf '%s/telegram-offset' "$SCHEDULE_STATE_DIR"; }
 tgc_login_file()  { printf '%s/telegram-login-pending' "$SCHEDULE_STATE_DIR"; }
 
@@ -6976,6 +7039,34 @@ $url"
 # apex, so the attacker's host can never reach the phone.
 tgc_extract_login_url() {
   grep -oE 'https://([A-Za-z0-9-]+\.)*(claude\.ai|anthropic\.com)(/[A-Za-z0-9./?=&_%~+-]*)?' | tail -1
+}
+
+# tgc_denied_recent — DENIED (unknown chat) lines in the audit log from the
+# last N days (default 7). The stranger-knocking signal, surfaced on the menu
+# status panel and pushed once per quiet period from the tick.
+tgc_denied_recent() {
+  local days="${1:-7}" f cutoff
+  f=$(tgc_log_file); [ -f "$f" ] || { echo 0; return 0; }
+  cutoff=$(date -j -v-"${days}"d '+%Y-%m-%d' 2>/dev/null || date -d "$days days ago" '+%Y-%m-%d' 2>/dev/null)
+  awk -v c="$cutoff" '$1 >= c && /DENIED chat=/' "$f" | grep -c . 
+  return 0
+}
+
+# tgc_denied_check — tick-time: when NEW denied lines appeared since the last
+# alert, push a throttled heads-up. The count stamp keeps one alert per wave.
+tgc_denied_check() {
+  tgc_enabled || return 0
+  local n stamp="$SCHEDULE_STATE_DIR/tgc-denied-seen" last=0
+  n=$(tgc_denied_recent 7)
+  [ -f "$stamp" ] && last=$(cat "$stamp" 2>/dev/null || echo 0)
+  case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  if [ "$n" -gt "$last" ]; then
+    printf '%s\n' "$n" > "$stamp"
+    notify "tgc-denied" "Agent Nexus: $((n - last)) message(s) to your CONTROL bot from a chat that is not yours (silently dropped, as designed). If this keeps happening, someone found the bot username. Audit: $(tgc_log_file)"
+  elif [ "$n" -lt "$last" ]; then
+    printf '%s\n' "$n" > "$stamp"   # log trimmed/rotated; resync quietly
+  fi
+  return 0
 }
 
 # tgc_projects_text — the project folders /new accepts, straight from disk.
@@ -7410,6 +7501,8 @@ cmd_tick() {
   # macOS file access: a lost TCC grant blocks every session SILENTLY, and it
   # comes back with every tmux upgrade. Cheap probe, throttled alert.
   tcc_check
+  # Strangers knocking on the control bot get surfaced, not just logged.
+  tgc_denied_check
   # Approval dialogs (Chrome site gates and friends) parked in tracked panes:
   # push the question to the phone. The daemon also runs this every poll loop;
   # here is the fallback cadence for installs without the daemon.
@@ -9865,6 +9958,12 @@ cmd_settings() {
     _cfg_row "stale-weeks" "$sw"
     _cfg_note "the Sessions hub flags Active sessions untouched this many weeks and"
     _cfg_note "offers to archive them (suggestion only; 'off' or 0 disables)"
+    local rm2="${CFG_RESUME_MODE:-as-is}"
+    _cfg_row "resume-mode" "$rm2"
+    _cfg_note "when an unattended relaunch meets claude's resume dialog (long"
+    _cfg_note "conversations): as-is = keep the FULL context, never summarize"
+    _cfg_note "without being asked (big conversations may reload slowly);"
+    _cfg_note "summary = the old behavior, resume from a compacted summary."
     local al="${CFG_ACTION_LOG:-on}"
     _cfg_row "action-log" "$al"
     _cfg_note "on = every state-changing action you take in the menus (register,"
@@ -9879,7 +9978,7 @@ cmd_settings() {
     local act
     act=$(pick_option "Edit which setting? (writes to sessions.md; Esc backs out)" \
       "permission-mode   (now: $pm)" "chrome   (now: $ch)" "remote-control   (now: $rc)" \
-      "boot-restore   (now: $br)" "catchup-hours   (now: $cu)" "keep-alive   (now: $ka)" "stale-weeks   (now: $sw)" "update-require-signed   (now: $urs)" "action-log   (now: $al)" "notify-command   (advanced — prefer the Telegram setup below)" "notify-level   (now: $nl)" "Set up Telegram notifications (guided)" "Set up Telegram CONTROL from your phone (guided)" "Set up the agent-bus SSH door (remote senders)" "Update Agent Nexus (pull the latest from GitHub)" "[ run setup wizard ]" "[ done ]")
+      "boot-restore   (now: $br)" "catchup-hours   (now: $cu)" "keep-alive   (now: $ka)" "stale-weeks   (now: $sw)" "update-require-signed   (now: $urs)" "action-log   (now: $al)" "resume-mode   (now: $rm2)" "notify-command   (advanced — prefer the Telegram setup below)" "notify-level   (now: $nl)" "Set up Telegram notifications (guided)" "Set up Telegram CONTROL from your phone (guided)" "Set up the agent-bus SSH door (remote senders)" "Update Agent Nexus (pull the latest from GitHub)" "[ run setup wizard ]" "[ done ]")
     local v
     case "$act" in
       permission-mode*)
@@ -11915,6 +12014,13 @@ startup_status_lines() {
   path_health_banner   # install folder / projects-root moved since setup
   ticker_stale_banner  # the launchd ticker stopped ticking (nothing else can see this)
   update_banner        # a newer version is waiting on GitHub
+  # Strangers knocking on the control bot (last 7 days). Informational: the
+  # messages were dropped; this is "someone found the username", not a breach.
+  local _dn; _dn=$(tgc_denied_recent 7 2>/dev/null)
+  if [ "${_dn:-0}" -gt 0 ] 2>/dev/null; then
+    printf '%s!!  %s message(s) to the Telegram CONTROL bot from an unknown chat in the last 7 days (dropped + audited: %s)%s\n' \
+      "$C_WARN" "$_dn" "$(tgc_log_file)" "$C_RESET"
+  fi
   return 0
 }
 
