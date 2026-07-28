@@ -482,6 +482,7 @@ parse_sessions_file() {
   CFG_KEEP_ALIVE=""
   CFG_STALE_WEEKS=""
   CFG_UPDATE_REQUIRE_SIGNED=""
+  CFG_ACTION_LOG=""
   ACTIVE_NAMES=()
   ACTIVE_PATHS=()
   ACTIVE_IDS=()
@@ -543,6 +544,7 @@ parse_sessions_file() {
             keep-alive) CFG_KEEP_ALIVE="$value" ;;
             stale-weeks) CFG_STALE_WEEKS="$value" ;;
             update-require-signed) CFG_UPDATE_REQUIRE_SIGNED="$value" ;;
+            action-log) CFG_ACTION_LOG="$value" ;;
             digest) CFG_DIGEST="$value" ;;
             digest-time) CFG_DIGEST_TIME="$value" ;;
             digest-weekly-day) CFG_DIGEST_WEEKLY_DAY="$value" ;;
@@ -771,6 +773,7 @@ registry_restore() {
   cp "$hold" "$SESSIONS_FILE" 2>/dev/null || { rm -f "$hold"; return 1; }
   rm -f "$hold"
   parse_sessions_file
+  action_log "session list restored from snapshot: $(basename "$src")"
   return 0
 }
 
@@ -884,6 +887,7 @@ notify-level: ${CFG_NOTIFY_LEVEL:-failures}
 keep-alive: ${CFG_KEEP_ALIVE:-on}
 stale-weeks: ${CFG_STALE_WEEKS:-3}
 update-require-signed: ${CFG_UPDATE_REQUIRE_SIGNED:-off}
+action-log: ${CFG_ACTION_LOG:-on}
 digest: ${CFG_DIGEST:-off}
 digest-time: ${CFG_DIGEST_TIME:-08:00}
 digest-weekly-day: ${CFG_DIGEST_WEEKLY_DAY:-Mon}
@@ -956,6 +960,7 @@ EOF
 # Skips if the name is already present in Active or Archived.
 # If <new_project> is empty, infers the project from the path.
 append_to_active() {
+  action_log "registered session: ${1:-?}"
   local new_name="$1"
   local new_path="$2"
   local new_id="$3"
@@ -2559,15 +2564,18 @@ tier_move_by_name() {
       active)
         ACTIVE_NAMES+=("$nm"); ACTIVE_PATHS+=("${TAKEN_PATHS[$k]}")
         ACTIVE_IDS+=("${TAKEN_IDS[$k]}"); ACTIVE_PROJECTS+=("${TAKEN_PROJECTS[$k]}")
-        echo "  → activated '$nm'" ;;
+        echo "  → activated '$nm'"
+        action_log "moved to Active: $nm" ;;
       standby)
         STANDBY_NAMES+=("$nm"); STANDBY_PATHS+=("${TAKEN_PATHS[$k]}")
         STANDBY_IDS+=("${TAKEN_IDS[$k]}"); STANDBY_PROJECTS+=("${TAKEN_PROJECTS[$k]}")
-        echo "  → moved '$nm' to standby" ;;
+        echo "  → moved '$nm' to standby"
+        action_log "moved to Standby: $nm" ;;
       archived)
         ARCHIVED_NAMES+=("$nm"); ARCHIVED_PATHS+=("${TAKEN_PATHS[$k]}")
         ARCHIVED_IDS+=("${TAKEN_IDS[$k]}"); ARCHIVED_PROJECTS+=("${TAKEN_PROJECTS[$k]}")
-        echo "  → archived '$nm'" ;;
+        echo "  → archived '$nm'"
+        action_log "archived: $nm" ;;
     esac
   done
   return 0
@@ -2640,6 +2648,7 @@ tracked_lookup() {
 # rewrite managed-sessions.md. Rebuilds EVERY parallel array (a partial rebuild
 # here once misaligned reset/ckpt values onto the wrong sessions).
 pkg_remove_by_name() {
+  action_log "auto-manage OFF: $*"
   local nN=() nS=() nD=() nH=() nP=() nM=() nR=() nC=() nK=() i
   for i in "${!PKG_NAMES[@]}"; do
     _name_in_list "${PKG_NAMES[$i]}" "$@" && continue
@@ -4650,6 +4659,23 @@ NOTIFY_COOLDOWN="${NOTIFY_COOLDOWN:-14400}"
 # Log paths resolve at CALL time so a test's SCHEDULE_STATE_DIR override is
 # honored (a source-time assignment would freeze the real path).
 notify_log_path() { printf '%s' "${NOTIFY_LOG:-$SCHEDULE_STATE_DIR/notify.log}"; }
+
+# --- action log ---------------------------------------------------------------
+# One line per STATE-CHANGING human action (register, tier move, drop,
+# auto-manage on/off, task add/edit/remove, rename, trash, restore). Exists
+# because interactive actions used to leave no trail at all: when a session
+# "mysteriously" survived a removal on 2026-07-26, nothing could say which
+# menu action had actually run (it was an un-manage). The scheduler, bus and
+# Telegram all have logs; the human in the menus was the only invisible actor.
+# Setting: action-log on|off in the ## Config block (default on; the cost is
+# one appended line per action). Viewer: Tools > Alerts and run reports.
+action_log_path() { printf '%s' "${ACTION_LOG:-$SCHEDULE_STATE_DIR/actions.log}"; }
+action_log() {
+  case "${CFG_ACTION_LOG:-on}" in off|no|0) return 0 ;; esac
+  mkdir -p "$SCHEDULE_STATE_DIR" 2>/dev/null
+  printf '%s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >> "$(action_log_path)" 2>/dev/null
+  return 0
+}
 runs_log_path()   { printf '%s' "${RUNS_LOG:-$SCHEDULE_STATE_DIR/runs.log}"; }
 
 # notify_log_line <status> <key> <msg> — the alert audit trail (menu: Tools >
@@ -5119,6 +5145,7 @@ cmd_run_report() {
     runs_log_line "REPORT task=$id (UNVERIFIED id - not a registered task): $summary"
   fi
   trim_log "$(runs_log_path)" 2000
+  trim_log "$(action_log_path)" 2000
   if [ "${CFG_NOTIFY_LEVEL:-failures}" = "all" ] && [ -n "$known" ]; then
     notify "report-$id" "Run report [$id]: $summary"   # throttled (not notify_now)
   fi
@@ -5158,8 +5185,14 @@ cmd_activity_log() {
   local nl_body; nl_body=$(grep -v '^#' "$nl" 2>/dev/null | tail -30)
   if [ -n "$nl_body" ]; then printf '%s\n' "$nl_body"; else cdim "  (nothing yet)"; fi
   echo ""
+  chead "Recent actions"
+  cdim "  State-changing things a human did in the menus (setting: action-log)."
+  local al_body; al_body=$(tail -20 "$(action_log_path)" 2>/dev/null)
+  if [ -n "$al_body" ]; then printf '%s\n' "$al_body"; else cdim "  (nothing yet)"; fi
+  echo ""
   printf '  %-12s %s\n' "full files" "$rl"
   printf '  %-12s %s\n' "" "$nl"
+  printf '  %-12s %s\n' "" "$(action_log_path)"
   panel_close
   return 0
 }
@@ -5632,6 +5665,7 @@ trash_dir_path() { printf '%s' "${TRASH_DIR_OVERRIDE:-$SCHEDULE_STATE_DIR/trash}
 # The trash filename keeps the slug so restore knows where it came from:
 #   <when>__<slug>__<uuid>.jsonl
 trash_conversation() {
+  action_log "conversation moved to trash: ${1:0:8}"
   local uuid="$1" dir="$2" slug src dst
   [ -z "$uuid" ] || [ -z "$dir" ] && return 1
   slug=$(claude_project_slug "$(resolve_path "$dir")")
@@ -5664,6 +5698,7 @@ trash_list() {
 # trash_restore <trash-file> — put a transcript back where Claude looks for it.
 # Refuses to clobber an existing conversation of the same id.
 trash_restore() {
+  action_log "conversation restored from trash: $(basename "${1:-?}" 2>/dev/null | cut -c1-24)"
   local f="$1" base rest slug uuid target
   [ -f "$f" ] || return 1
   base=$(basename "$f" .jsonl); rest="${base#*__}"
@@ -6047,6 +6082,7 @@ prompt_launch_override() {
 # pkg_register <name> <session> <dir> — append a package block (used by the
 # schedule menu; non-interactive so it's unit-testable).
 pkg_register() {
+  action_log "auto-manage ON: $1"
   local name="$1"
   [ -f "$MANAGED_FILE" ] || write_packages_template
   parse_packages
@@ -7366,6 +7402,7 @@ cmd_tick() {
   trim_log "$BUS_LOG" 5000
   trim_log "$(notify_log_path)" 2000
   trim_log "$(runs_log_path)" 2000
+  trim_log "$(action_log_path)" 2000
   sched_lock_release "$tick_lock"
 }
 
@@ -7759,6 +7796,7 @@ sched_add_task() {
   # past occurrence as handled closes the window that existed before the task.
   local _occ; _occ=$(occurrence_epoch "$sc")
   [ -n "$_occ" ] && sched_set_last_fired "$id" "$_occ"
+  action_log "scheduled task added: $id -> $target ($sc)"
   echo ""
   echo "Added task '$id' → session '$target', schedule '$sc'."
   echo "  Prompt: $prompt"
@@ -7788,6 +7826,7 @@ sched_toggle_task() {
     *) SCHED_ENABLED[$idx]="yes";;
   esac
   write_scheduled_tasks
+  action_log "scheduled task ${SCHED_ENABLED[$idx]}: ${SCHED_IDS[$idx]}"
   echo "Task '${SCHED_IDS[$idx]}' is now: ${SCHED_ENABLED[$idx]}"
 }
 
@@ -7806,6 +7845,7 @@ sched_remove_task() {
   SCHED_IDS=("${nI[@]}"); SCHED_SESSIONS=("${nS[@]}"); SCHED_SCHEDULES=("${nSc[@]}")
   SCHED_PROMPTS=("${nP[@]}"); SCHED_ENABLED=("${nE[@]}")
   write_scheduled_tasks
+  action_log "scheduled task removed: $gone"
   echo "Removed task '$gone'."
   # Offer to take the now-jobless session down with it (QA 2026-07-26) -
   # but never while another task still fires into it, and KEEP is the default.
@@ -7939,6 +7979,7 @@ sched_edit_task() {
           if [ -n "$(occurrence_epoch "$sc")" ]; then
             SCHED_SCHEDULES[$idx]="$sc"
             write_scheduled_tasks
+            action_log "scheduled task edited: $id schedule -> $sc"
             # Same no-retroactive-catch-up rule as creation: a schedule set to
             # a time inside the last 12h must not fire NOW; only its next
             # occurrence counts.
@@ -7953,6 +7994,7 @@ sched_edit_task() {
         if sched_ask_prompt "${SCHED_SESSIONS[$idx]}"; then
           SCHED_PROMPTS[$idx]="$SAP_PROMPT"
           write_scheduled_tasks
+          action_log "scheduled task edited: $id prompt changed"
           echo "  Saved."
         fi ;;
       "Target session"*)
@@ -9641,7 +9683,7 @@ managed_edit_fields() {
               case "$v" in ""|"[ keep"*) return 0 ;; *) PKG_KEEPALIVES[$idx]="$v" ;; esac ;;
     *) return 2 ;;   # cancelled the field menu: distinct rc so a review loop can stop
   esac
-  write_managed && echo "  Updated '$pick'."
+  write_managed && { echo "  Updated '$pick'."; action_log "auto-manage setting changed: $pick"; }
   # Flipping checkpoint-compact ON needs more than the flag: hooks + the
   # compaction-safe CLAUDE.md discipline. Offer the full setup right here.
   if [[ "$f" == checkpoint-compact* ]] && [ "$v" = "on" ]; then
@@ -9706,6 +9748,12 @@ cmd_settings() {
     _cfg_row "stale-weeks" "$sw"
     _cfg_note "the Sessions hub flags Active sessions untouched this many weeks and"
     _cfg_note "offers to archive them (suggestion only; 'off' or 0 disables)"
+    local al="${CFG_ACTION_LOG:-on}"
+    _cfg_row "action-log" "$al"
+    _cfg_note "on = every state-changing action you take in the menus (register,"
+    _cfg_note "archive, drop, auto-manage, task changes) writes one line to the"
+    _cfg_note "action log, so 'what did I click yesterday' has an answer. Viewer:"
+    _cfg_note "Tools > Alerts and run reports."
     local urs="${CFG_UPDATE_REQUIRE_SIGNED:-off}"
     _cfg_row "update-require-signed" "$urs"
     _cfg_note "on = 'update' refuses a new version unless its tip commit carries a"
@@ -9714,7 +9762,7 @@ cmd_settings() {
     local act
     act=$(pick_option "Edit which setting? (writes to sessions.md; Esc backs out)" \
       "permission-mode   (now: $pm)" "chrome   (now: $ch)" "remote-control   (now: $rc)" \
-      "boot-restore   (now: $br)" "catchup-hours   (now: $cu)" "keep-alive   (now: $ka)" "stale-weeks   (now: $sw)" "update-require-signed   (now: $urs)" "notify-command   (advanced — prefer the Telegram setup below)" "notify-level   (now: $nl)" "Set up Telegram notifications (guided)" "Set up Telegram CONTROL from your phone (guided)" "Set up the agent-bus SSH door (remote senders)" "Update Agent Nexus (pull the latest from GitHub)" "[ run setup wizard ]" "[ done ]")
+      "boot-restore   (now: $br)" "catchup-hours   (now: $cu)" "keep-alive   (now: $ka)" "stale-weeks   (now: $sw)" "update-require-signed   (now: $urs)" "action-log   (now: $al)" "notify-command   (advanced — prefer the Telegram setup below)" "notify-level   (now: $nl)" "Set up Telegram notifications (guided)" "Set up Telegram CONTROL from your phone (guided)" "Set up the agent-bus SSH door (remote senders)" "Update Agent Nexus (pull the latest from GitHub)" "[ run setup wizard ]" "[ done ]")
     local v
     case "$act" in
       permission-mode*)
@@ -10307,6 +10355,7 @@ drop_sessions_by_name() {
   _tier_remove active "$@"
   _tier_remove standby "$@"
   _tier_remove archived "$@"
+  action_log "dropped from the session list: $*"
 }
 
 # hub_reconnect <name> <path> <id> — recreate a not-running tracked session

@@ -319,6 +319,7 @@ Config keys:
 | `enable-chrome` | If `yes` (default), sessions launch with `--chrome` (browser + computer-use tools). |
 | `boot-restore` | If `on`, the scheduler's first tick after a reboot automatically relaunches every Active + managed session (one-shot per boot). Needs the ticker installed, and auto-login on a headless Mac. Default `off`. |
 | `catchup-hours` | Missed-run window in hours (default 12): a scheduled run the machine slept through still fires if less than this late; older ones are skipped so nothing fires absurdly late. |
+| `action-log` | `on` (default) writes one line per state-changing menu action (register, archive, drop, auto-manage, task changes) to the state dir's `actions.log`, so "what did I click yesterday" has an answer. Viewer: Tools > Alerts and run reports. `off` disables. |
 | `notify-command` | Optional. A command run as `<command> "<message>"` to alert YOU when something needs a human: a session logged out of Claude, a managed session that can't be healed, a failed bus request (throttled to once per 4h per condition). `agent-nexus setup-telegram` walks the whole Telegram flow, from bot creation to a test message. Empty = off. |
 | `keep-alive` | If `on` (default), every scheduler tick relaunches any managed session whose Claude died, so automation targets stay alive. Per-session override in `managed-sessions.md`. |
 
