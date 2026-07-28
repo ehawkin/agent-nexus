@@ -23,7 +23,7 @@ Filename: `<UTC-stamp>-<slug>-<rand4>.md`, e.g.
 ```markdown
 ---
 id: 20260704T093012Z-fix-links-a7f3    # MUST equal the filename minus .md
-target: vault                           # a registered managed agent session name
+target: vault                           # a registered auto-managed session name
 from: macbook-social                    # who you are
 created: 2026-07-04T09:30:12Z
 # optional:
@@ -39,7 +39,7 @@ Rules that matter:
 - **Write-once:** write to a temp name, rename into `inbox/`, never touch the
   file again. This is load-bearing for conflict-freedom.
 - `---END---` must be the last line (completeness sentinel).
-- `target` must be a managed agent session on the Mini
+- `target` must be a auto-managed session on the Mini
   (`managed-sessions.md`); unknown targets go to `failed/`.
 - Caps: 256 KB per file, 30 requests/hour.
 
@@ -51,7 +51,7 @@ Rules that matter:
 | it's in `waiting/` | target busy or a retry is pending; it will be retried |
 | it's in `done/` | DELIVERED to the session. NOT completion: wait for an appended outcome in that file, or `responses/<id>.md` |
 | it's in `failed/` | rejected (bad format/target/caps) or undeliverable; see the reason in the Mini's log or the daily summary |
-| `responses/<id>.md` exists | the managed agent session's reply to you |
+| `responses/<id>.md` exists | the auto-managed session's reply to you |
 
 Retries may rename your file (`x.md -> x.r1.md`); the `id` (stem) never
 changes, so correlate on it.

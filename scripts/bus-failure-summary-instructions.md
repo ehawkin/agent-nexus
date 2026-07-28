@@ -2,7 +2,7 @@
 
 You are the session that runs the daily agent-bus failure summary. Do this:
 
-1. Read `~/.rocky-sessions/bus.log`. Find the LAST line whose event is
+1. Read `the state dir's bus.log (~/.agent-nexus/bus.log; pre-rename installs use ~/.rocky-sessions/)`. Find the LAST line whose event is
    `SUMMARY` (grammar: `<epoch> <ISO> EVENT id=... target=...`). Consider only
    lines AFTER it (all lines, if none).
 2. From those lines collect: every FAILED (with its reason), every

@@ -18,15 +18,29 @@ keyboard shortcut (`Cmd+Shift+B`) reconnects to all of them as VS Code editor ta
 
 - **Sessions hub** - every Claude session on the machine in one numbered,
   phone-friendly menu: attach, archive, revive, rename, act on several at
-  once. Archived sessions stay hidden until you ask.
-- **Scheduled tasks** - fire a prompt into any session on a schedule
-  ("Sat 08:00", "daily 05:30"). Missed runs catch up within a window you
-  set; every run files a one-line report of what it did.
+  once. Three tiers (Active / Standby / Archived) keep the working set
+  honest: Standby sessions stay findable but are never auto-started.
+- **Scheduled tasks** - fire a prompt into any session on a schedule, written
+  however you'd say it ("Sat 08:00", "saturday 8pm", "daily 7:30 am"). Each
+  run fires at most once, skips a busy session, catches up a missed run
+  within a window you set, and files a one-line report of what it did. A
+  wizard walks creation end to end; tasks are editable in place.
 - **Self-healing automation** - auto-managed sessions are relaunched
   automatically if they die (after a reboot too, with boot-restore on),
   resuming the same Claude conversation.
+- **Context control for recurring jobs** - a per-run reset policy
+  (`/compact` or `/clear` before each run) so a nightly job never piles up
+  context and token cost, plus a durable `STATE.md` memory the session reads
+  on wake and can write back, so facts survive a full context wipe.
+- **Checkpoint compaction** - a long-running session can shed its own
+  context at safe checkpoints it declares (after committing and updating its
+  docs), so a multi-hour autonomous run doesn't rack up a huge conversation.
+- **Undo built in** - every change to the session list is snapshotted first
+  and restorable from the hub, and deleted conversations go to a
+  restorable trash. Nothing is purged automatically.
 - **Agent bus** - other machines/agents can drop requests into your
-  sessions through a shared folder or a locked-down SSH door.
+  sessions through a shared folder or a locked-down SSH door; requests queue
+  and deliver whether or not both machines are online at once.
 - **Telegram alerts** - a guided 5-minute setup gives you a private bot
   that texts you when something needs a human (logged-out Claude, failed
   heals, runs that never fired) - and, if you want, each run's report.
@@ -39,10 +53,16 @@ keyboard shortcut (`Cmd+Shift+B`) reconnects to all of them as VS Code editor ta
   for approval dialogs parked in unattended sessions (Chrome's per-site gate,
   an auto-mode pause), texts you the question, and lets you answer it from
   the phone. Set up with `agent-nexus setup-telegram-control`.
+- **Launch settings you own** - every session's flags come from settings,
+  not hardcoding: permission mode (`bypass` / `auto` / `ask`), Chrome on or
+  off, Remote Control on or off, global defaults with per-session overrides.
 - **Self-updating** - the menu tells you when a newer version is on GitHub
   and updates itself on request.
-- **Health checks** - a doctor command that catches broken paths, dead
-  tickers, stale sessions, and split conversations before you hit them.
+- **Health checks** - a doctor command plus always-on watches that catch
+  what fails silently: broken paths, dead tickers, stale sessions,
+  double-attached conversations, and the macOS file-access grant that tmux
+  loses on upgrades and reboots (everything looks healthy while nothing can
+  read your files; the tool notices and texts you).
 
 ## Install in 3 steps
 
@@ -82,6 +102,7 @@ through everything, including a fresh Mac from scratch.
 .
 ├── README.md                              this file
 ├── Mac Mini Claude Code Setup Guide.md    the full guide
+├── LICENSE                                PolyForm Noncommercial 1.0.0
 └── scripts/
     ├── setup.sh                           one-time configuration; safe to re-run
     └── sessions.sh                        single entry point with subcommands:
@@ -223,7 +244,7 @@ Most things you'd want to tweak live in the config block at the top of `sessions
 
 | Key | What it does |
 |---|---|
-| `machine-name` | Prefix used in the alias names |
+| `machine-name` | Optional. Adds personal aliases (`<name>-nexus`) beside the canonical `agent-nexus` |
 | `projects-root` | Directory the `new` subcommand offers as a picker; also the base for relative paths |
 | `tasks-file` | Where the updater writes the VS Code tasks file |
 | `enable-remote-control` | If `yes`, sends `/remote-control` inside Claude after each new session |
@@ -231,9 +252,10 @@ Most things you'd want to tweak live in the config block at the top of `sessions
 Edit `sessions.md` directly, or re-run `setup.sh` (idempotent - your existing
 Active and Archived entries are preserved).
 
-The scripts are pure bash, no external dependencies beyond `tmux` and `claude`.
-Read them - they're short.
+The scripts are pure bash, no external dependencies beyond `tmux` and
+`claude`. The full config-key reference lives in the Setup Guide.
 
 ## License
 
-Pick whatever you like - this is intended as starter scaffolding, not a maintained product.
+[PolyForm Noncommercial 1.0.0](LICENSE). Free to use, modify, and share for
+any noncommercial purpose; commercial rights are reserved by SilverApps LLC.

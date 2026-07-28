@@ -20,7 +20,7 @@ Throughout, `<projects-root>` is the projects-root you set during setup, and
    - `ssh <user>@<host> "agent-nexus submit --target <session> --from <you> 'the ask'"`
    - `ssh <user>@<host> "agent-nexus process-inbox"` (drain the queue now)
    This needs the one-time restricted key set up on this machine with
-   `<machine>-nexus install-bus-key` (see `bus-ssh-wrapper.sh`). Only those two
+   `agent-nexus install-bus-key` (see `bus-ssh-wrapper.sh`). Only those two
    commands are permitted over that key.
 
 > Note: over the SSH door the sender types the literal prefix `agent-nexus`
@@ -41,7 +41,7 @@ own sandbox, filesystem work on the other machine, etc.):
 
    ---
    id: <id>
-   target: <a managed agent session name on the other machine>
+   target: <a auto-managed session name on the other machine>
    from: <your own short label>
    created: <ISO-8601 UTC>
    ---
@@ -64,8 +64,8 @@ own sandbox, filesystem work on the other machine, etc.):
 
 - The queue, handler, ticker (every 15 min), HEARTBEAT, and protocol doc are set
   up by installing this tool and enabling the scheduler.
-- `target:` must name a **managed agent session** registered in
-  `managed-sessions.md` (make one with `<machine>-nexus managed`), or the request is
+- `target:` must name a **auto-managed session** registered in
+  `managed-sessions.md` (make one with `agent-nexus managed`), or the request is
   rejected as an unknown target.
-- For the SSH door, run `<machine>-nexus install-bus-key` once with the sender's
+- For the SSH door, run `agent-nexus install-bus-key` once with the sender's
   public key.

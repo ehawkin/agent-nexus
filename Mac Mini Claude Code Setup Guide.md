@@ -27,7 +27,7 @@ agent-nexus list          All projects and sessions (incl. dormant); Attach / Re
 agent-nexus restore       Recreate every Active session in tmux (post-reboot)
 agent-nexus cycle         Cycle /remote-control off-then-on on running sessions
 agent-nexus update        Regenerate tasks.json from sessions.md (housekeeping)
-agent-nexus backfill  Scan ~/.claude/projects/ to fill missing UUIDs
+agent-nexus backfill      Scan ~/.claude/projects/ to fill missing UUIDs
 agent-nexus revive        Recreate a single dormant Claude conversation
 agent-nexus setup         Re-run setup (config + alias)
 agent-nexus help          Usage
@@ -154,8 +154,10 @@ an explanation and a proposed default you can accept or change):
 | Boot-restore | Auto-relaunch every Active + managed session on the first scheduler tick after a reboot. Default `off`. |
 | Catch-up window | How late a missed scheduled run may still fire, in hours. Default `12`. |
 
-It writes the config block at the top of `scripts/sessions.md`, then offers
-to add a single zsh alias to `~/.zshrc`. The alias lands between marker lines
+It writes the config block at the top of `sessions.md` (in the data
+directory you chose; fresh installs default to `~/.agent-nexus/data/`), then offers
+to add the `agent-nexus` alias to `~/.zshrc` (plus personal aliases if you
+named the machine). The block lands between marker lines
 (`# >>> claude-mac-mini-setup >>>` … `# <<< claude-mac-mini-setup <<<`) so
 you can remove it cleanly later. Idempotent - safe to re-run.
 
@@ -755,6 +757,63 @@ agent-nexus doctor          # health check across sessions, scheduler, bus
 
 Operational state (fire ledger, logs, locks) lives in the state dir: `~/.agent-nexus/` on new installs (installs from before the rename keep `~/.rocky-sessions/`)
 (local, not synced). The bus queue lives in `<projects-root>/_agent-bus/`.
+
+## 5. Concepts and gotchas
+
+The mental models that make the tool's behavior predictable, and the traps
+every install eventually meets. Five minutes here saves a confused evening
+later.
+
+**A session is a conversation file.** Each Claude Code conversation is one
+`~/.claude/projects/<slug>/<uuid>.jsonl`, keyed to the directory it was
+started in. Agent Nexus's registry (`sessions.md`) maps friendly names to
+those files plus their tmux sessions. "Dormant" in the hub simply means "a
+saved conversation not in the registry"; a session started outside the tool
+shows as dormant even while it is running.
+
+**Registry tiers.** `## Active` is the working set (restored after reboots,
+in the VS Code tasks). `## Standby` is tracked but never auto-started; park
+things there instead of letting Active grow meaningless. `## Archived` is
+reference. Moving between tiers never touches the tmux session or the
+conversation, only what automation does with it.
+
+**Remote Control is a steering wheel, not a relocation.** The session, its
+tools, the browser, and the screen all stay on the Mac; driving from your
+laptop or phone only relays input. Chrome and computer-use work over Remote
+Control precisely because they are co-located with the session.
+
+**The macOS file-access trap (TCC).** macOS attributes file access made
+under tmux to the TMUX binary, and the permission grant binds to the exact
+installed version. Two consequences: a reboot can bring the tmux server up
+with no Documents/Desktop grant (a consent dialog sits unanswered on the
+Mac's screen while every session fails and LOOKS healthy), and every
+`brew upgrade tmux` silently invalidates the grant. The tool probes for this
+every 15 minutes and alerts through your notify-command; the fix is granting
+Full Disk Access to tmux (System Settings > Privacy) or answering the
+pending dialog. If sessions can suddenly read nothing, check this first.
+
+**One conversation, one process.** Resuming the same conversation in two
+processes corrupts it, so the tool guards every resume path and `doctor`
+warns about double-attaches. If you see that warning, kill the extra pids it
+names.
+
+**Deletes are undoable.** Every change to the session list snapshots it
+first (hub: Several at once > Previous versions of the session list), and
+deleting a conversation moves the transcript to a trash the hub can restore
+from. Nothing is purged automatically.
+
+**Launch dialogs answer themselves.** When automation relaunches a session,
+Claude sometimes shows a first-run folder-trust dialog or (for long
+conversations) a resume-from-summary choice. The tool answers both
+automatically and logs that it did, so unattended restarts do not hang. Any
+OTHER dialog (a permission gate, a question) is detected by the approval
+watch and texted to you instead.
+
+**Hands off `~/.claude.json`.** It is Claude Code's live state file; the
+tool never writes it, and neither should scripts of yours. Enabling
+computer-use is a per-project act (`/mcp` inside the session) plus a macOS
+grant keyed to the Claude binary, which an auto-update can orphan; re-grant
+if computer-use silently stops connecting.
 
 ## Troubleshooting
 

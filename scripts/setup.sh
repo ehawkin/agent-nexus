@@ -286,7 +286,7 @@ echo "     your laptop's keybindings.json (this script runs on"
 echo "     the agent machine; the laptop is a different machine,"
 echo "     so the snippet is printed rather than written)."
 echo ""
-echo "Existing ## Active and ## Archived entries in sessions.md"
+echo "Existing ## Active / ## Standby / ## Archived entries in sessions.md"
 echo "are preserved. Safe to re-run any time."
 echo ""
 
