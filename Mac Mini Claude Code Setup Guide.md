@@ -323,6 +323,8 @@ Config keys:
 | `action-log` | `on` (default) writes one line per state-changing menu action (register, archive, drop, auto-manage, task changes) to the state dir's `actions.log`, so "what did I click yesterday" has an answer. Viewer: Tools > Alerts and run reports. `off` disables. |
 | `notify-command` | Optional. A command run as `<command> "<message>"` to alert YOU when something needs a human: a session logged out of Claude, a managed session that can't be healed, a failed bus request (throttled to once per 4h per condition). `agent-nexus setup-telegram` walks the whole Telegram flow, from bot creation to a test message. Empty = off. |
 | `keep-alive` | If `on` (default), every scheduler tick relaunches any managed session whose Claude died, so automation targets stay alive. Per-session override in `managed-sessions.md`. |
+| `config-backup` | `weekly` copies the authored files inside `~/.claude` (your global `CLAUDE.md`, `settings.json`, and Claude's per-project auto-memory) to `config-backup-dir` on the scheduler tick, once every 7 days. `~/.claude` has no sync or version history of its own, so point the destination somewhere synced (Dropbox, iCloud, a git repo). Run one anytime with `agent-nexus backup-claude-config`. Default `off`. |
+| `handbook-dir` | Optional. The folder where your process docs live (a "Global Handbook" directory, or a folder inside an Obsidian vault). The qa-levels playbook points its checklist reference here when set. |
 
 **These launch settings are user-controllable.** Edit them from the menu
 ("Session launch settings", or `agent-nexus settings`) or by re-running
@@ -761,6 +763,39 @@ agent-nexus doctor          # health check across sessions, scheduler, bus
 
 Operational state (fire ledger, logs, locks) lives in the state dir: `~/.agent-nexus/` on new installs (installs from before the rename keep `~/.rocky-sessions/`)
 (local, not synced). The bus queue lives in `<projects-root>/_agent-bus/`.
+
+### 4.5 Playbooks (process packs for your CLAUDE.md)
+
+Long-running Claude Code work lives or dies on process: where issues get
+logged, how in-flight state survives a compaction, what a QA pass actually
+checks. Playbooks package the working disciplines this system was built
+around so you can adopt any of them in one step:
+
+- **doc-tracking**: an `_admin/` directory per project holding a QA log
+  (every issue the user raises, status-tracked), a review queue (judgment
+  calls the agent made), a backlog (deliberately deferred work with revisit
+  triggers), a changelog, and PROJECT-NOTES (durable know-how).
+- **living-handoff**: a per-day handoff file maintained *while* working, so
+  a compaction, crash, or reboot never eats "what we're doing and why."
+- **compaction-discipline**: docs bound to commits plus the
+  `compact-checkpoint` protocol for long autonomous sessions.
+- **post-compaction-reread**: after any compaction or `/clear`, re-read the
+  docs before working; a summary is a pointer, not memory.
+- **qa-levels**: three named QA depths (quick / standard / full browser
+  walkthrough) with a checklist that grows from real defects.
+- **review-surfacing**: open judgment calls get offered for review in chat
+  at session start; the user never has to open the file.
+- **memory-promotion**: a periodic review that promotes preferences
+  recurring across projects into the global CLAUDE.md.
+
+Run `agent-nexus playbooks` (also in Settings + Setup). You checkbox-select
+packs, see the EXACT text that will be appended, and choose the target: the
+global `~/.claude/CLAUDE.md` (applies everywhere) or one project's
+`CLAUDE.md`. The target is backed up first (timestamped `.bak` beside it,
+and the tool says so); installing a pack twice is a no-op. After
+installing, have an agent read the file once and flag duplication or
+contradictions with rules you already had: the installer appends blindly on
+purpose, so nothing you wrote is ever modified.
 
 ## 5. Concepts and gotchas
 

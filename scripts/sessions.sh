@@ -484,6 +484,9 @@ parse_sessions_file() {
   CFG_UPDATE_REQUIRE_SIGNED=""
   CFG_ACTION_LOG=""
   CFG_RESUME_MODE=""
+  CFG_CONFIG_BACKUP=""
+  CFG_CONFIG_BACKUP_DIR=""
+  CFG_HANDBOOK_DIR=""
   ACTIVE_NAMES=()
   ACTIVE_PATHS=()
   ACTIVE_IDS=()
@@ -548,6 +551,9 @@ parse_sessions_file() {
             action-log) CFG_ACTION_LOG="$value" ;;
             resume-mode) CFG_RESUME_MODE="$value" ;;
             digest) CFG_DIGEST="$value" ;;
+            config-backup) CFG_CONFIG_BACKUP="$value" ;;
+            config-backup-dir) CFG_CONFIG_BACKUP_DIR="$value" ;;
+            handbook-dir) CFG_HANDBOOK_DIR="$value" ;;
             digest-time) CFG_DIGEST_TIME="$value" ;;
             digest-weekly-day) CFG_DIGEST_WEEKLY_DAY="$value" ;;
             digest-dir) CFG_DIGEST_DIR="$value" ;;
@@ -892,6 +898,9 @@ update-require-signed: ${CFG_UPDATE_REQUIRE_SIGNED:-off}
 action-log: ${CFG_ACTION_LOG:-on}
 resume-mode: ${CFG_RESUME_MODE:-as-is}
 digest: ${CFG_DIGEST:-off}
+config-backup: ${CFG_CONFIG_BACKUP:-off}
+config-backup-dir: ${CFG_CONFIG_BACKUP_DIR:-}
+handbook-dir: ${CFG_HANDBOOK_DIR:-}
 digest-time: ${CFG_DIGEST_TIME:-08:00}
 digest-weekly-day: ${CFG_DIGEST_WEEKLY_DAY:-Mon}
 digest-dir: ${CFG_DIGEST_DIR:-}
@@ -7503,6 +7512,9 @@ cmd_tick() {
   tcc_check
   # Strangers knocking on the control bot get surfaced, not just logged.
   tgc_denied_check
+  # Weekly copy of the authored ~/.claude files to a synced folder (setting:
+  # config-backup); ~/.claude has no sync or version history of its own.
+  config_backup_tick
   # Approval dialogs (Chrome site gates and friends) parked in tracked panes:
   # push the question to the phone. The daemon also runs this every poll loop;
   # here is the fallback cadence for installs without the daemon.
@@ -9906,6 +9918,351 @@ managed_edit_fields() {
 }
 
 # --- Session launch settings (global defaults for new sessions) --------------
+# --- Global Handbook: playbooks + Claude-config backup ------------------------
+# Playbooks are opt-in process packs (working disciplines refined on this
+# system: doc tracking, living handoffs, compaction-safe docs, QA levels)
+# that a user can append to a CLAUDE.md. Rules: checkbox-select with
+# explanations, a FULL-TEXT preview of the exact block before anything is
+# written, a timestamped .bak in the same folder first, and marker-guarded
+# idempotency (installing twice is a no-op). backup-claude-config copies the
+# authored files that must live inside ~/.claude (CLAUDE.md, settings.json,
+# per-project auto-memory) out to a synced folder, because the tool's own
+# directory has no sync or version history of its own.
+
+pb_ids() { printf '%s\n' doc-tracking living-handoff compaction-discipline post-compaction-reread qa-levels review-surfacing memory-promotion; }
+
+pb_title() {
+  case "$1" in
+    doc-tracking)           printf 'Doc tracking (_admin/: QA log, review queue, backlog, changelog)' ;;
+    living-handoff)         printf 'Living handoff (continuous session state on disk)' ;;
+    compaction-discipline)  printf 'Compaction-safe docs + self-declared checkpoints' ;;
+    post-compaction-reread) printf 'Post-compaction re-read (docs beat summaries)' ;;
+    qa-levels)              printf 'QA levels (quick / standard / full walkthrough)' ;;
+    review-surfacing)       printf 'Review-queue surfacing (decisions reviewed in chat)' ;;
+    memory-promotion)       printf 'Memory promotion (recurring preferences become global rules)' ;;
+  esac
+}
+
+pb_desc() {
+  case "$1" in
+    doc-tracking)           printf 'Nothing the user says falls through the cracks: issues, judgment calls, deferred work, and what shipped each get one tracked home.' ;;
+    living-handoff)         printf 'A per-day handoff file maintained while working, so compactions and crashes never eat in-flight state.' ;;
+    compaction-discipline)  printf 'Docs bound to commits + the compact-checkpoint protocol for long autonomous sessions.' ;;
+    post-compaction-reread) printf 'After any compaction or /clear, re-read the docs before working; the summary is a pointer, not memory.' ;;
+    qa-levels)              printf 'Three named QA depths for UI work, with a growing checklist fed by real defects.' ;;
+    review-surfacing)       printf 'Open judgment calls get offered for review in chat at session start; the user never has to open the file.' ;;
+    memory-promotion)       printf 'A periodic review that promotes preferences recurring across projects into the global CLAUDE.md.' ;;
+  esac
+}
+
+# pb_text <id> [handbook-dir] -> the exact block installed, marker-wrapped
+# (pure; testable). qa-levels points at <handbook-dir>/QA-CHECKLIST.md when a
+# handbook dir is given, else embeds the checklist inline.
+pb_text() {
+  local id="$1" hb="${2:-}"
+  printf '<!-- agent-nexus playbook: %s v1 -->\n' "$id"
+  case "$id" in
+    doc-tracking) cat <<'EOF'
+## Project doc tracking (_admin/)
+
+Every project keeps its tracking docs in an `_admin/` directory at the repo
+root (underscore so it sorts first). Five files with distinct triggers:
+
+- `_admin/QA-LOG-<slug>.md`: every issue or improvement the user raises,
+  logged the moment it is mentioned, before working on it. Entries are H3
+  headers tagged [OPEN] / [RESOLVED date] / [BACKLOGGED date] / [WONTFIX
+  date], grouped under ## OPEN / ## BACKLOGGED / ## RESOLVED, newest first.
+  Read ## OPEN at the start of every session.
+- `_admin/REVIEW-QUEUE-<slug>.md`: judgment calls the agent made that the
+  user might plausibly want different (wording, defaults, naming, ordering,
+  fallbacks). Logged in the same response that makes the call.
+- `_admin/BACKLOG.md`: work deliberately deferred. Each entry: Context /
+  Proposed shape / Revisit when (a concrete trigger, never "someday").
+  Shipped or superseded entries move, detail intact, to
+  `_admin/BACKLOG-COMPLETED.md`.
+- `_admin/CHANGELOG.md`: what actually shipped, plain prose, newest first,
+  written in the same commit that lands the work. Scripts, scheduled tasks,
+  and settings changes count as shipped features.
+- `_admin/PROJECT-NOTES.md`: durable know-how (environment facts, gotchas,
+  invariants, working recipes). One home, fixed name.
+EOF
+    ;;
+    living-handoff) cat <<'EOF'
+## Living handoff (continuous session state on disk)
+
+The handoff is a living document maintained WHILE working, not written at
+session end. It is the durable home of the present tense: what we are
+working on, why, and what is still to be done.
+
+- Create `_admin/handoffs/HANDOFF-YYYY-MM-DD.md` (one file per working day)
+  the moment the session stops being a one-off: when a second request
+  arrives, or the first task outgrows its original scope.
+- Update it at event boundaries, as a side effect of working: an item
+  completes, a plan forms, a decision redirects the work, an open question
+  appears or is answered. Rewrite changed sections in place. Keep current:
+  the goal and why, decisions so far, the queue in priority order with the
+  in-flight item's exact state, and open questions for the user.
+- Docs first, then compact: refresh the handoff before any manual /compact
+  or /clear. Automatic compactions fire at moments nobody chooses; the
+  continuous updates are what make them safe.
+- Crossing ~60% of the context window with no handoff on disk means stop
+  and create one before continuing.
+- Session end is a final refresh, not a from-scratch write.
+EOF
+    ;;
+    compaction-discipline) ckpt_claude_md_block ;;
+    post-compaction-reread) cat <<'EOF'
+## After a compaction or /clear: re-read before you work
+
+A compaction replaces the conversation with a short model-written summary;
+treat that summary as a pointer, not as memory. Before doing any work after
+a compaction, a /clear, or a session restart: re-read the newest handoff in
+`_admin/handoffs/`, the top of `_admin/CHANGELOG.md`, and the plan index if
+the project has one. When the summary and the docs disagree, the docs win.
+EOF
+    ;;
+    qa-levels)
+      cat <<'EOF'
+## QA levels
+
+UI or user-facing work gets a QA pass at one of three levels: **quick**
+(lint + tests green), **standard** (quick + actually run the thing and
+exercise the changed path), **full** (standard + a real browser
+walkthrough: contrast in BOTH dark and light modes, spacing between
+objects, alignment of text and objects relative to each other, text
+sitting properly inside its containers and buttons, console free of
+errors, interactive elements actually working when clicked). UI work
+defaults to standard, with full offered.
+EOF
+      if [ -n "$hb" ]; then
+        printf 'When the user reports a visual or UX bug, offer to generalize it into\nthe checklist at `%s/QA-CHECKLIST.md` so the list grows from real defects.\n' "$hb"
+      else
+        printf 'When the user reports a visual or UX bug, offer to generalize it into a\nQA checklist so the list grows from real defects.\n'
+      fi
+    ;;
+    review-surfacing) cat <<'EOF'
+## Review-queue surfacing
+
+The user never opens the review-queue file. At session start, if OPEN
+entries exist, say so in one line (count + oldest age) and offer to review
+them in chat right away as quick pick-one-option questions; actively
+suggest the walk-through once any entry is 3+ days old. Record answers in
+the file yourself; the user answers only in chat.
+EOF
+    ;;
+    memory-promotion) cat <<'EOF'
+## Memory promotion (periodic)
+
+Per-project auto-memory captures the user's preferences where they were
+stated; a preference that keeps recurring belongs in the global CLAUDE.md,
+where it binds everywhere. Periodically (roughly monthly, or when asked):
+read every project's memory directory, list preferences that appear in two
+or more projects or clearly generalize, and propose promoting them into
+the global CLAUDE.md. Back up that file first; append with a note naming
+the memory files each rule came from; then slim the per-project duplicates
+so each fact has one home.
+EOF
+    ;;
+    *) printf '(unknown playbook: %s)\n' "$id" ;;
+  esac
+  printf '<!-- end agent-nexus playbook: %s -->\n' "$id"
+}
+
+# pb_installed <file> <id> -> rc 0 when the marker is already present.
+pb_installed() { [ -f "$1" ] && grep -q "agent-nexus playbook: $2 " "$1" 2>/dev/null; }
+
+# pb_install_into <file> <handbook-dir-or-empty> <id...>
+# Backs the target up (timestamped .bak beside it, only when it exists),
+# appends each not-yet-installed pack, skips duplicates. Prints one line per
+# pack + the backup path. Pure enough to test without the TUI.
+pb_install_into() {
+  local tgt="$1" hb="$2"; shift 2
+  local made_bak="" id
+  mkdir -p "$(dirname "$tgt")" 2>/dev/null
+  if [ -f "$tgt" ]; then
+    made_bak="$tgt.$(date +%Y%m%d-%H%M%S).bak"
+    cp "$tgt" "$made_bak" || { echo "ERROR: could not back up $tgt" >&2; return 1; }
+    echo "  backup: $made_bak"
+  else
+    printf '# CLAUDE.md\n' > "$tgt" || { echo "ERROR: could not create $tgt" >&2; return 1; }
+    echo "  created: $tgt"
+  fi
+  for id in "$@"; do
+    if pb_installed "$tgt" "$id"; then
+      echo "  already present (skipped): $id"
+    else
+      { printf '\n'; pb_text "$id" "$hb"; } >> "$tgt"
+      echo "  installed: $id"
+    fi
+  done
+  return 0
+}
+
+# cmd_playbooks — the interactive install flow.
+cmd_playbooks() {
+  parse_sessions_file
+  echo ""
+  panel_open "Playbooks"
+  cdim "  Working disciplines this system uses, packaged so you can add them to a"
+  cdim "  CLAUDE.md of your own. You pick the packs, you see the EXACT text before"
+  cdim "  anything is written, and the target file is backed up first (.bak beside"
+  cdim "  it). Installing a pack twice is a no-op."
+  echo ""
+  local ids=() id n=0
+  while IFS= read -r id; do
+    ids+=("$id"); n=$((n+1))
+    printf '  %s%2d%s  %s\n' "$C_ACCENT" "$n" "$C_RESET" "$(pb_title "$id")"
+    printf '      %s%s%s\n' "$C_DIM" "$(pb_desc "$id")" "$C_RESET"
+  done < <(pb_ids)
+  panel_close
+  local sel_raw
+  read -r -p "  Which packs? (numbers separated by spaces, e.g. 1 3 5; 'all'; Enter cancels): " sel_raw || sel_raw=""
+  [ -z "$sel_raw" ] && { echo "  Cancelled."; return 1; }
+  local sel=() tok
+  if [ "$sel_raw" = "all" ]; then
+    sel=("${ids[@]}")
+  else
+    for tok in $sel_raw; do
+      case "$tok" in
+        *[!0-9]*|'') echo "  '$tok' is not a number; cancelled."; return 1 ;;
+      esac
+      if [ "$tok" -ge 1 ] && [ "$tok" -le "$n" ]; then
+        sel+=("${ids[$((tok - 1))]}")
+      else
+        echo "  $tok is out of range (1-$n); cancelled."; return 1
+      fi
+    done
+  fi
+  [ "${#sel[@]}" -eq 0 ] && { echo "  Nothing selected."; return 1; }
+
+  # Target: the global CLAUDE.md, or a project's.
+  local tgt="" where
+  where=$(pick_option "Append to which CLAUDE.md?" \
+    "Global (~/.claude/CLAUDE.md) — applies to every project" \
+    "A project's CLAUDE.md — pick its directory" \
+    "[ cancel ]")
+  case "$where" in
+    Global*)
+      if [ ! -d "$HOME/.claude" ]; then
+        echo "  ~/.claude does not exist; is Claude Code installed for this user?"
+        echo "  (Its location has moved across versions; if yours lives elsewhere,"
+        echo "  pick the project option and type the directory instead.)"
+        return 1
+      fi
+      tgt="$HOME/.claude/CLAUDE.md" ;;
+    "A project"*)
+      local pdir
+      pdir=$(pick_project_directory "Directory whose CLAUDE.md gets the packs") || return 1
+      [ -z "$pdir" ] && return 1
+      tgt="$pdir/CLAUDE.md" ;;
+    *) echo "  Cancelled."; return 1 ;;
+  esac
+
+  # qa-levels points at the handbook when one is configured; offer to set it.
+  local hb="${CFG_HANDBOOK_DIR:-}"
+  local wants_qa="" s
+  for s in "${sel[@]}"; do [ "$s" = "qa-levels" ] && wants_qa=1; done
+  if [ -n "$wants_qa" ] && [ -z "$hb" ]; then
+    echo ""
+    cdim "  The qa-levels pack can point at a QA-CHECKLIST.md in your handbook"
+    cdim "  folder (your process docs home), or embed the checklist inline."
+    local hbp
+    hbp=$(pick_option "Where do your process docs live?" \
+      "Skip — embed the checklist inline" \
+      "A folder I'll type (e.g. a 'Global Handbook' dir in your Agent Nexus folder)" \
+      "Inside an Obsidian vault (type the vault, then a folder; '_Claude' is a good one)")
+    case "$hbp" in
+      "A folder"*)
+        read -r -p "  Handbook directory (full path): " hb
+        [ -n "$hb" ] && [ ! -d "$hb" ] && { echo "  (not a directory; embedding inline instead)"; hb=""; } ;;
+      "Inside an Obsidian vault"*)
+        local vault sub
+        read -r -p "  Vault directory (full path): " vault
+        if [ -d "$vault" ]; then
+          read -r -p "  Folder inside the vault (Enter = _Claude): " sub
+          hb="$vault/${sub:-_Claude}"
+          mkdir -p "$hb" 2>/dev/null || { echo "  (could not create $hb; embedding inline)"; hb=""; }
+        else
+          echo "  (not a directory; embedding inline instead)"; hb=""
+        fi ;;
+      *) hb="" ;;
+    esac
+    if [ -n "$hb" ]; then
+      CFG_HANDBOOK_DIR="$hb"; write_sessions_file
+      echo "  handbook-dir saved: $hb"
+    fi
+  fi
+
+  # Full-text preview: the user sees exactly what will be appended.
+  echo ""
+  chead "This exact text will be appended to $tgt"
+  echo ""
+  for s in "${sel[@]}"; do
+    pb_text "$s" "$hb"
+    echo ""
+  done
+  local go
+  go=$(pick_yesno "Append these ${#sel[@]} block(s) to $tgt? (a timestamped .bak is made first)" \
+    "Yes — back up and append" "No — cancel" no)
+  [ "$go" = "yes" ] || { echo "  Cancelled; nothing written."; return 1; }
+  pb_install_into "$tgt" "$hb" "${sel[@]}" || return 1
+  action_log "playbooks installed into $tgt: ${sel[*]}"
+  echo ""
+  cdim "  Recommended: have an agent read $tgt once now and flag duplication or"
+  cdim "  contradictions with what was already there; the installer appends"
+  cdim "  blindly and cannot judge your existing rules."
+  return 0
+}
+
+# --- backup-claude-config ----------------------------------------------------
+# config_backup_dir -> destination (setting config-backup-dir, else state dir).
+config_backup_dir() { printf '%s' "${CFG_CONFIG_BACKUP_DIR:-$SCHEDULE_STATE_DIR/claude-config-backup}"; }
+
+# config_backup_run [dest] — copy the authored ~/.claude files out. Seam:
+# CLAUDE_HOME_DIR (tests point it at a fixture).
+config_backup_run() {
+  local src="${CLAUDE_HOME_DIR:-$HOME/.claude}" dest="${1:-$(config_backup_dir)}"
+  [ -d "$src" ] || { echo "backup: $src not found (is Claude Code installed?)" >&2; return 1; }
+  mkdir -p "$dest/memory" 2>/dev/null || { echo "backup: cannot create $dest" >&2; return 1; }
+  [ -f "$src/CLAUDE.md" ] && cp "$src/CLAUDE.md" "$dest/CLAUDE.md"
+  [ -f "$src/settings.json" ] && cp "$src/settings.json" "$dest/settings.json"
+  local d slug n=0
+  for d in "$src"/projects/*/memory; do
+    [ -d "$d" ] || continue
+    slug=$(basename "$(dirname "$d")")
+    mkdir -p "$dest/memory/$slug"
+    cp "$d"/* "$dest/memory/$slug/" 2>/dev/null
+    n=$((n + 1))
+  done
+  date +%s > "$SCHEDULE_STATE_DIR/config-backup-last" 2>/dev/null
+  echo "Backed up CLAUDE.md, settings.json, and $n memory dir(s) -> $dest"
+  return 0
+}
+
+cmd_backup_claude_config() {
+  parse_sessions_file 2>/dev/null
+  config_backup_run "$@" || return 1
+  action_log "claude-config backup run -> $(config_backup_dir)"
+  return 0
+}
+
+# config_backup_due -> rc 0 when the weekly setting is on and 7+ days passed.
+config_backup_due() {
+  case "${CFG_CONFIG_BACKUP:-off}" in weekly) ;; *) return 1 ;; esac
+  local f="$SCHEDULE_STATE_DIR/config-backup-last" last=0 now
+  [ -f "$f" ] && last=$(cat "$f" 2>/dev/null)
+  case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  now=$(date +%s)
+  [ $((now - last)) -ge 604800 ]
+}
+
+config_backup_tick() {
+  config_backup_due || return 0
+  config_backup_run >/dev/null 2>&1 \
+    && sched_log "CONFIG-BACKUP weekly -> $(config_backup_dir)" \
+    || sched_log "CONFIG-BACKUP weekly FAILED (source or destination missing)"
+}
+
 cmd_settings() {
   parse_sessions_file
   while true; do
@@ -9974,11 +10331,17 @@ cmd_settings() {
     _cfg_row "update-require-signed" "$urs"
     _cfg_note "on = 'update' refuses a new version unless its tip commit carries a"
     _cfg_note "valid git signature from a key this machine trusts (supply-chain guard)"
+    local cb="${CFG_CONFIG_BACKUP:-off}"
+    _cfg_row "config-backup" "$cb"
+    _cfg_note "weekly = each tick checks whether 7 days passed and, if so, copies the"
+    _cfg_note "authored ~/.claude files (CLAUDE.md, settings.json, auto-memory) to"
+    _cfg_note "$(config_backup_dir)"
+    _cfg_note "(change the destination when enabling; ~/.claude has no sync of its own)"
     panel_close
     local act
     act=$(pick_option "Edit which setting? (writes to sessions.md; Esc backs out)" \
       "permission-mode   (now: $pm)" "chrome   (now: $ch)" "remote-control   (now: $rc)" \
-      "boot-restore   (now: $br)" "catchup-hours   (now: $cu)" "keep-alive   (now: $ka)" "stale-weeks   (now: $sw)" "update-require-signed   (now: $urs)" "action-log   (now: $al)" "resume-mode   (now: $rm2)" "notify-command   (advanced — prefer the Telegram setup below)" "notify-level   (now: $nl)" "Set up Telegram notifications (guided)" "Set up Telegram CONTROL from your phone (guided)" "Set up the agent-bus SSH door (remote senders)" "Update Agent Nexus (pull the latest from GitHub)" "[ run setup wizard ]" "[ done ]")
+      "boot-restore   (now: $br)" "catchup-hours   (now: $cu)" "keep-alive   (now: $ka)" "stale-weeks   (now: $sw)" "update-require-signed   (now: $urs)" "action-log   (now: $al)" "resume-mode   (now: $rm2)" "config-backup   (now: $cb)" "notify-command   (advanced — prefer the Telegram setup below)" "notify-level   (now: $nl)" "Playbooks — append process packs to a CLAUDE.md" "Back up Claude config now" "Set up Telegram notifications (guided)" "Set up Telegram CONTROL from your phone (guided)" "Set up the agent-bus SSH door (remote senders)" "Update Agent Nexus (pull the latest from GitHub)" "[ run setup wizard ]" "[ done ]")
     local v
     case "$act" in
       permission-mode*)
@@ -10028,6 +10391,26 @@ cmd_settings() {
         echo "  until their next scheduled/bus delivery."
         v=$(pick_option "Keep managed sessions alive? (now: $ka)" "[ keep current: $ka ]" on off)
         case "$v" in ""|"[ keep"*) ;; *) CFG_KEEP_ALIVE="$v" ;; esac ;;
+      config-backup*)
+        echo "  ~/.claude holds three authored things (CLAUDE.md, settings.json, the"
+        echo "  per-project auto-memory) and has no sync or version history of its own."
+        echo "  'weekly' copies them to a folder you choose (put it somewhere synced)."
+        v=$(pick_option "Weekly Claude-config backup? (now: $cb)" "[ keep current: $cb ]" weekly off)
+        case "$v" in ""|"[ keep"*) ;; *) CFG_CONFIG_BACKUP="$v" ;; esac
+        if [ "$v" = "weekly" ]; then
+          echo "  Destination (now: $(config_backup_dir))"
+          read -r -p "  New destination directory (Enter keeps): " v
+          [ -n "$v" ] && CFG_CONFIG_BACKUP_DIR="$v"
+        fi ;;
+      "Playbooks"*)
+        cmd_playbooks
+        parse_sessions_file
+        read -r -p "Press Enter to continue..." _
+        continue ;;
+      "Back up Claude config now")
+        cmd_backup_claude_config
+        read -r -p "Press Enter to continue..." _
+        continue ;;
       "Set up Telegram CONTROL"*)
         cmd_setup_telegram_control ;;
       "Set up Telegram"*)
@@ -11993,6 +12376,20 @@ Commands, ordered by how often you'll use them:
            Also hosts the guided setups: Telegram notifications, the
            agent-bus SSH door, and the full setup wizard.
 
+  playbooks
+           Append opt-in process packs (doc tracking, living handoffs,
+           compaction-safe docs, QA levels, review surfacing, memory
+           promotion) to a CLAUDE.md of your choice. You pick the packs,
+           see the exact text first, and the target is backed up (.bak
+           beside it) before anything is written. Installing twice is a
+           no-op (marker-guarded). Also in Settings + Setup.
+
+  backup-claude-config [dest]
+           Copy the authored ~/.claude files (CLAUDE.md, settings.json,
+           per-project auto-memory) to a synced folder; ~/.claude has no
+           sync or version history of its own. The config-backup setting
+           runs this weekly on the tick.
+
   setup    Run setup.sh — the configuration wizard. Asks for machine
            name, projects-root, the launch defaults above, etc.; offers to
            install fzf; prints the VS Code keybindings snippet to add on your
@@ -12410,6 +12807,14 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     enable-checkpoint-compact)
       shift
       cmd_enable_checkpoint_compact "$@"
+      ;;
+    playbooks)
+      shift
+      cmd_playbooks "$@"
+      ;;
+    backup-claude-config)
+      shift
+      cmd_backup_claude_config "$@"
       ;;
     doctor)
       shift

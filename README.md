@@ -56,6 +56,19 @@ keyboard shortcut (`Cmd+Shift+B`) reconnects to all of them as VS Code editor ta
 - **Launch settings you own** - every session's flags come from settings,
   not hardcoding: permission mode (`bypass` / `auto` / `ask`), Chrome on or
   off, Remote Control on or off, global defaults with per-session overrides.
+- **Playbooks** - opt-in process packs you can append to a CLAUDE.md of your
+  choice: a doc-tracking system (QA log / review queue / backlog /
+  changelog), living session handoffs, compaction-safe documentation
+  discipline, post-compaction re-read rules, QA levels with a growing
+  checklist, review-queue surfacing, and a memory-promotion routine. You
+  pick the packs, see the exact text before anything is written, and the
+  target file is backed up first; installing twice is a no-op. Menu:
+  Settings + Setup > Playbooks, or `agent-nexus playbooks`.
+- **Claude-config backup** - `~/.claude` holds your global CLAUDE.md,
+  settings, and Claude's per-project memory, with no sync or version
+  history of its own. `agent-nexus backup-claude-config` copies them to a
+  folder you choose (put it somewhere synced); a `config-backup: weekly`
+  setting runs it automatically on the scheduler tick.
 - **Self-updating** - the menu tells you when a newer version is on GitHub
   and updates itself on request.
 - **Health checks** - a doctor command plus always-on watches that catch
