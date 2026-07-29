@@ -323,7 +323,7 @@ Config keys:
 | `action-log` | `on` (default) writes one line per state-changing menu action (register, archive, drop, auto-manage, task changes) to the state dir's `actions.log`, so "what did I click yesterday" has an answer. Viewer: Tools > Alerts and run reports. `off` disables. |
 | `notify-command` | Optional. A command run as `<command> "<message>"` to alert YOU when something needs a human: a session logged out of Claude, a managed session that can't be healed, a failed bus request (throttled to once per 4h per condition). `agent-nexus setup-telegram` walks the whole Telegram flow, from bot creation to a test message. Empty = off. |
 | `keep-alive` | If `on` (default), every scheduler tick relaunches any managed session whose Claude died, so automation targets stay alive. Per-session override in `managed-sessions.md`. |
-| `config-backup` | `weekly` copies the authored files inside `~/.claude` (your global `CLAUDE.md`, `settings.json`, and Claude's per-project auto-memory) to `config-backup-dir` on the scheduler tick, once every 7 days. `~/.claude` has no sync or version history of its own, so point the destination somewhere synced (Dropbox, iCloud, a git repo). Run one anytime with `agent-nexus backup-claude-config`. Default `off`. |
+| `config-backup` | `daily` or `weekly` copies the authored files inside `~/.claude` (your global `CLAUDE.md`, `settings.json`, and Claude's per-project auto-memory; ~200 KB total) to `config-backup-dir` on the scheduler tick, once per interval. The copy is a mirror, so history comes from the destination's own versioning (Dropbox history, git, Time Machine); point it somewhere synced, because `~/.claude` has no sync or version history of its own. Run one anytime with `agent-nexus backup-claude-config`. Default `off`. |
 | `handbook-dir` | Optional. The folder where your process docs live (a "Global Handbook" directory, or a folder inside an Obsidian vault). The qa-levels playbook points its checklist reference here when set. |
 
 **These launch settings are user-controllable.** Edit them from the menu
@@ -788,14 +788,20 @@ around so you can adopt any of them in one step:
 - **memory-promotion**: a periodic review that promotes preferences
   recurring across projects into the global CLAUDE.md.
 
-Run `agent-nexus playbooks` (also in Settings + Setup). You checkbox-select
-packs, see the EXACT text that will be appended, and choose the target: the
-global `~/.claude/CLAUDE.md` (applies everywhere) or one project's
-`CLAUDE.md`. The target is backed up first (timestamped `.bak` beside it,
-and the tool says so); installing a pack twice is a no-op. After
-installing, have an agent read the file once and flag duplication or
-contradictions with rules you already had: the installer appends blindly on
-purpose, so nothing you wrote is ever modified.
+Run `agent-nexus playbooks` (also in Settings + Setup). You first pick the
+target, the global `~/.claude/CLAUDE.md` (applies everywhere) or one
+project's `CLAUDE.md`, and the pack list then shows each pack's status IN
+that file: `[installed]`, or `[installed, EDITED since deploy]` when you
+have changed the block after installing it. Status is recomputed from the
+file itself (a checksum stamped in the block's marker), never remembered
+from a past deploy. Select packs by number, see the EXACT text that will be
+appended, and confirm. The target is backed up first (timestamped `.bak`
+beside it, and the tool says so); installing a pack twice is a no-op, and
+an edited pack stays yours (reinstalling skips it; to restore stock text,
+delete the marker-to-marker block and reinstall). After installing, have an
+agent read the file once and flag duplication or contradictions with rules
+you already had: the installer appends blindly on purpose, so nothing you
+wrote is ever modified.
 
 ## 5. Concepts and gotchas
 

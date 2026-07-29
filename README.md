@@ -67,8 +67,8 @@ keyboard shortcut (`Cmd+Shift+B`) reconnects to all of them as VS Code editor ta
 - **Claude-config backup** - `~/.claude` holds your global CLAUDE.md,
   settings, and Claude's per-project memory, with no sync or version
   history of its own. `agent-nexus backup-claude-config` copies them to a
-  folder you choose (put it somewhere synced); a `config-backup: weekly`
-  setting runs it automatically on the scheduler tick.
+  folder you choose (put it somewhere synced); a `config-backup` setting
+  (daily or weekly) runs it automatically on the scheduler tick.
 - **Self-updating** - the menu tells you when a newer version is on GitHub
   and updates itself on request.
 - **Health checks** - a doctor command plus always-on watches that catch

@@ -7512,8 +7512,9 @@ cmd_tick() {
   tcc_check
   # Strangers knocking on the control bot get surfaced, not just logged.
   tgc_denied_check
-  # Weekly copy of the authored ~/.claude files to a synced folder (setting:
-  # config-backup); ~/.claude has no sync or version history of its own.
+  # Periodic copy (daily/weekly) of the authored ~/.claude files to a synced
+  # folder (setting: config-backup); ~/.claude has no sync or version
+  # history of its own.
   config_backup_tick
   # Approval dialogs (Chrome site gates and friends) parked in tracked panes:
   # push the question to the phone. The daemon also runs this every poll loop;
@@ -9955,12 +9956,11 @@ pb_desc() {
   esac
 }
 
-# pb_text <id> [handbook-dir] -> the exact block installed, marker-wrapped
-# (pure; testable). qa-levels points at <handbook-dir>/QA-CHECKLIST.md when a
-# handbook dir is given, else embeds the checklist inline.
-pb_text() {
+# pb_body <id> [handbook-dir] -> the pack body, no markers (pure; testable).
+# qa-levels points at <handbook-dir>/QA-CHECKLIST.md when a handbook dir is
+# given, else embeds the checklist inline.
+pb_body() {
   local id="$1" hb="${2:-}"
-  printf '<!-- agent-nexus playbook: %s v1 -->\n' "$id"
   case "$id" in
     doc-tracking) cat <<'EOF'
 ## Project doc tracking (_admin/)
@@ -10065,7 +10065,32 @@ EOF
     ;;
     *) printf '(unknown playbook: %s)\n' "$id" ;;
   esac
+}
+
+# pb_text <id> [handbook-dir] -> the exact installed block: the body wrapped
+# in markers, the opening marker carrying a checksum of the body (c:NNN) so a
+# later status check can tell "installed and intact" from "installed but
+# edited since" by RECOMPUTING from the target file, never by remembering a
+# past deploy.
+pb_text() {
+  local id="$1" hb="${2:-}" body sum
+  body=$(pb_body "$id" "$hb")
+  sum=$(printf '%s' "$body" | cksum | cut -d' ' -f1)
+  printf '<!-- agent-nexus playbook: %s v1 c:%s -->\n' "$id" "$sum"
+  printf '%s\n' "$body"
   printf '<!-- end agent-nexus playbook: %s -->\n' "$id"
+}
+
+# pb_status <file> <id> -> not-installed | intact | edited. Recomputed from
+# the file itself each time: extract the between-marker body, checksum it,
+# compare with the c: value stamped at install.
+pb_status() {
+  local f="$1" id="$2" stored body cur
+  pb_installed "$f" "$id" || { printf 'not-installed'; return 0; }
+  stored=$(grep -o "agent-nexus playbook: $id v[0-9]* c:[0-9]*" "$f" 2>/dev/null | head -1 | sed 's/.*c://')
+  body=$(sed -n "/<!-- agent-nexus playbook: $id /,/<!-- end agent-nexus playbook: $id -->/p" "$f" 2>/dev/null | sed '1d;$d')
+  cur=$(printf '%s' "$body" | cksum | cut -d' ' -f1)
+  if [ -n "$stored" ] && [ "$stored" = "$cur" ]; then printf 'intact'; else printf 'edited'; fi
 }
 
 # pb_installed <file> <id> -> rc 0 when the marker is already present.
@@ -10108,36 +10133,14 @@ cmd_playbooks() {
   cdim "  anything is written, and the target file is backed up first (.bak beside"
   cdim "  it). Installing a pack twice is a no-op."
   echo ""
-  local ids=() id n=0
-  while IFS= read -r id; do
-    ids+=("$id"); n=$((n+1))
-    printf '  %s%2d%s  %s\n' "$C_ACCENT" "$n" "$C_RESET" "$(pb_title "$id")"
-    printf '      %s%s%s\n' "$C_DIM" "$(pb_desc "$id")" "$C_RESET"
-  done < <(pb_ids)
   panel_close
-  local sel_raw
-  read -r -p "  Which packs? (numbers separated by spaces, e.g. 1 3 5; 'all'; Enter cancels): " sel_raw || sel_raw=""
-  [ -z "$sel_raw" ] && { echo "  Cancelled."; return 1; }
-  local sel=() tok
-  if [ "$sel_raw" = "all" ]; then
-    sel=("${ids[@]}")
-  else
-    for tok in $sel_raw; do
-      case "$tok" in
-        *[!0-9]*|'') echo "  '$tok' is not a number; cancelled."; return 1 ;;
-      esac
-      if [ "$tok" -ge 1 ] && [ "$tok" -le "$n" ]; then
-        sel+=("${ids[$((tok - 1))]}")
-      else
-        echo "  $tok is out of range (1-$n); cancelled."; return 1
-      fi
-    done
-  fi
-  [ "${#sel[@]}" -eq 0 ] && { echo "  Nothing selected."; return 1; }
 
-  # Target: the global CLAUDE.md, or a project's.
+  # Target FIRST, so the pack list can show each pack's real status IN that
+  # file: installed-and-intact, installed-but-edited, or absent. Status is
+  # recomputed from the file every time (checksum in the marker), never
+  # remembered from a previous deploy.
   local tgt="" where
-  where=$(pick_option "Append to which CLAUDE.md?" \
+  where=$(pick_option "Which CLAUDE.md are we working with?" \
     "Global (~/.claude/CLAUDE.md) — applies to every project" \
     "A project's CLAUDE.md — pick its directory" \
     "[ cancel ]")
@@ -10157,6 +10160,42 @@ cmd_playbooks() {
       tgt="$pdir/CLAUDE.md" ;;
     *) echo "  Cancelled."; return 1 ;;
   esac
+
+  echo ""
+  chead "Packs, with their status in $tgt"
+  local ids=() id n=0 st tag
+  while IFS= read -r id; do
+    ids+=("$id"); n=$((n+1))
+    st=$(pb_status "$tgt" "$id")
+    case "$st" in
+      intact) tag="   [installed]" ;;
+      edited) tag="   [installed, EDITED since deploy]" ;;
+      *)      tag="" ;;
+    esac
+    printf '  %s%2d%s  %s%s\n' "$C_ACCENT" "$n" "$C_RESET" "$(pb_title "$id")" "$tag"
+    printf '      %s%s%s\n' "$C_DIM" "$(pb_desc "$id")" "$C_RESET"
+  done < <(pb_ids)
+  cdim "  (an EDITED pack stays yours: reinstalling skips it; to restore the stock"
+  cdim "  text, delete the whole marker-to-marker block by hand, then reinstall)"
+  local sel_raw
+  read -r -p "  Which packs? (numbers separated by spaces, e.g. 1 3 5; 'all'; Enter cancels): " sel_raw || sel_raw=""
+  [ -z "$sel_raw" ] && { echo "  Cancelled."; return 1; }
+  local sel=() tok
+  if [ "$sel_raw" = "all" ]; then
+    sel=("${ids[@]}")
+  else
+    for tok in $sel_raw; do
+      case "$tok" in
+        *[!0-9]*|'') echo "  '$tok' is not a number; cancelled."; return 1 ;;
+      esac
+      if [ "$tok" -ge 1 ] && [ "$tok" -le "$n" ]; then
+        sel+=("${ids[$((tok - 1))]}")
+      else
+        echo "  $tok is out of range (1-$n); cancelled."; return 1
+      fi
+    done
+  fi
+  [ "${#sel[@]}" -eq 0 ] && { echo "  Nothing selected."; return 1; }
 
   # qa-levels points at the handbook when one is configured; offer to set it.
   local hb="${CFG_HANDBOOK_DIR:-}"
@@ -10246,21 +10285,27 @@ cmd_backup_claude_config() {
   return 0
 }
 
-# config_backup_due -> rc 0 when the weekly setting is on and 7+ days passed.
+# config_backup_due -> rc 0 when the setting's interval has elapsed since the
+# stamp: daily = 24h, weekly = 7d, anything else = never.
 config_backup_due() {
-  case "${CFG_CONFIG_BACKUP:-off}" in weekly) ;; *) return 1 ;; esac
+  local interval
+  case "${CFG_CONFIG_BACKUP:-off}" in
+    daily)  interval=86400 ;;
+    weekly) interval=604800 ;;
+    *) return 1 ;;
+  esac
   local f="$SCHEDULE_STATE_DIR/config-backup-last" last=0 now
   [ -f "$f" ] && last=$(cat "$f" 2>/dev/null)
   case "$last" in ''|*[!0-9]*) last=0 ;; esac
   now=$(date +%s)
-  [ $((now - last)) -ge 604800 ]
+  [ $((now - last)) -ge "$interval" ]
 }
 
 config_backup_tick() {
   config_backup_due || return 0
   config_backup_run >/dev/null 2>&1 \
-    && sched_log "CONFIG-BACKUP weekly -> $(config_backup_dir)" \
-    || sched_log "CONFIG-BACKUP weekly FAILED (source or destination missing)"
+    && sched_log "CONFIG-BACKUP ${CFG_CONFIG_BACKUP:-} -> $(config_backup_dir)" \
+    || sched_log "CONFIG-BACKUP ${CFG_CONFIG_BACKUP:-} FAILED (source or destination missing)"
 }
 
 cmd_settings() {
@@ -10333,8 +10378,8 @@ cmd_settings() {
     _cfg_note "valid git signature from a key this machine trusts (supply-chain guard)"
     local cb="${CFG_CONFIG_BACKUP:-off}"
     _cfg_row "config-backup" "$cb"
-    _cfg_note "weekly = each tick checks whether 7 days passed and, if so, copies the"
-    _cfg_note "authored ~/.claude files (CLAUDE.md, settings.json, auto-memory) to"
+    _cfg_note "daily/weekly = the tick copies the authored ~/.claude files (CLAUDE.md,"
+    _cfg_note "settings.json, auto-memory; ~200 KB) once per interval to"
     _cfg_note "$(config_backup_dir)"
     _cfg_note "(change the destination when enabling; ~/.claude has no sync of its own)"
     panel_close
@@ -10393,11 +10438,13 @@ cmd_settings() {
         case "$v" in ""|"[ keep"*) ;; *) CFG_KEEP_ALIVE="$v" ;; esac ;;
       config-backup*)
         echo "  ~/.claude holds three authored things (CLAUDE.md, settings.json, the"
-        echo "  per-project auto-memory) and has no sync or version history of its own."
-        echo "  'weekly' copies them to a folder you choose (put it somewhere synced)."
-        v=$(pick_option "Weekly Claude-config backup? (now: $cb)" "[ keep current: $cb ]" weekly off)
+        echo "  per-project auto-memory; ~200 KB total) and has no sync or version"
+        echo "  history of its own. daily/weekly copies them to a folder you choose"
+        echo "  (put it somewhere synced; the copy is a mirror, so history comes from"
+        echo "  the destination's own versioning: Dropbox history, git, Time Machine)."
+        v=$(pick_option "Periodic Claude-config backup? (now: $cb)" "[ keep current: $cb ]" daily weekly off)
         case "$v" in ""|"[ keep"*) ;; *) CFG_CONFIG_BACKUP="$v" ;; esac
-        if [ "$v" = "weekly" ]; then
+        if [ "$v" = "weekly" ] || [ "$v" = "daily" ]; then
           echo "  Destination (now: $(config_backup_dir))"
           read -r -p "  New destination directory (Enter keeps): " v
           [ -n "$v" ] && CFG_CONFIG_BACKUP_DIR="$v"
@@ -12386,9 +12433,10 @@ Commands, ordered by how often you'll use them:
 
   backup-claude-config [dest]
            Copy the authored ~/.claude files (CLAUDE.md, settings.json,
-           per-project auto-memory) to a synced folder; ~/.claude has no
-           sync or version history of its own. The config-backup setting
-           runs this weekly on the tick.
+           per-project auto-memory; ~200 KB) to a synced folder; ~/.claude
+           has no sync or version history of its own. The config-backup
+           setting (daily | weekly) runs this on the tick; the copy is a
+           mirror, so history comes from the destination's own versioning.
 
   setup    Run setup.sh — the configuration wizard. Asks for machine
            name, projects-root, the launch defaults above, etc.; offers to
