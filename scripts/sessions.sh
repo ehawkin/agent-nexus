@@ -492,6 +492,8 @@ parse_sessions_file() {
   CFG_CONTEXT_ACT=""
   CFG_CONTEXT_TELEGRAM=""
   CFG_CONTEXT_WINDOW=""
+  CFG_CONTEXT_REPORT=""
+  NOTIFY_CH_NAMES=(); NOTIFY_CH_CMDS=()
   CFG_WATCH_DISK=""
   CFG_WATCH_DISK_GB=""
   CFG_WATCH_BACKUP=""
@@ -571,6 +573,10 @@ parse_sessions_file() {
             context-act) CFG_CONTEXT_ACT="$value" ;;
             context-telegram) CFG_CONTEXT_TELEGRAM="$value" ;;
             context-window) CFG_CONTEXT_WINDOW="$value" ;;
+            context-report) CFG_CONTEXT_REPORT="$value" ;;
+            notify-channel-?*)
+              NOTIFY_CH_NAMES+=("${key#notify-channel-}")
+              NOTIFY_CH_CMDS+=("$value") ;;
             watch-disk) CFG_WATCH_DISK="$value" ;;
             watch-disk-min-gb) CFG_WATCH_DISK_GB="$value" ;;
             watch-backup) CFG_WATCH_BACKUP="$value" ;;
@@ -930,6 +936,7 @@ context-notice: ${CFG_CONTEXT_NOTICE:-45}
 context-act: ${CFG_CONTEXT_ACT:-60}
 context-telegram: ${CFG_CONTEXT_TELEGRAM:-off}
 context-window: ${CFG_CONTEXT_WINDOW:-auto}
+context-report: ${CFG_CONTEXT_REPORT:-all}
 watch-disk: ${CFG_WATCH_DISK:-on}
 watch-disk-min-gb: ${CFG_WATCH_DISK_GB:-10}
 watch-backup: ${CFG_WATCH_BACKUP:-on}
@@ -941,6 +948,12 @@ digest-time: ${CFG_DIGEST_TIME:-08:00}
 digest-weekly-day: ${CFG_DIGEST_WEEKLY_DAY:-Mon}
 digest-dir: ${CFG_DIGEST_DIR:-}
 digest-telegram: ${CFG_DIGEST_TELEGRAM:-counts}
+EOF
+  # Named notify channels (notify-channel-<name>: <command>) are appended
+  # OUTSIDE the heredoc: the registry heredoc must stay free of live command
+  # substitution (tests enforce it; a bare one once ate a comment word).
+  notify_channels_render >> "$tmpfile"
+  cat >> "$tmpfile" <<EOF
 
 ## Active
 # Sessions loaded by Cmd+Shift+B and recreated by \`${prefix}-nexus restore\`.
@@ -3457,6 +3470,17 @@ cmd_restore() {
     tmux send-keys -t "$name" "/rename $name" Enter
   done
   sleep 1
+  # Context on restore (context-report setting): each revived session's gauge,
+  # read live from its transcript, so a restore ends with the lay of the land.
+  if ctx_watch_enabled && ctx_report_on restore; then
+    local _cr_out _cr_pct
+    for name in "${to_create_names[@]}"; do
+      _cr_out=$(ctx_usage "$name") || continue
+      _cr_pct=$(printf '%s' "$_cr_out" | awk '{print $3}')
+      [ -n "$_cr_pct" ] && echo "  context: $name at ${_cr_pct}%"
+      ctx_report restore "$name"
+    done
+  fi
 
   # Phase 3b: /remote-control (if enabled). With a current claude the launch
   # flag already enabled it (session_launch_flags); this send is the
@@ -4766,25 +4790,51 @@ notify_log_line() {
   printf '%s  %-9s %s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" "$2" "$3" >> "$f"
 }
 
-notify_send() {   # <msg> — run notify-command (backgrounded unless NOTIFY_SYNC=1)
+notify_send() {   # <msg> — run the routed command (backgrounded unless NOTIFY_SYNC=1)
+  local _cmd="${NOTIFY_SEND_CMD:-$CFG_NOTIFY_COMMAND}"
   if [ "${NOTIFY_SYNC:-}" = "1" ]; then
-    bash -c "$CFG_NOTIFY_COMMAND \"\$1\"" _ "$1" >/dev/null 2>&1
+    bash -c "$_cmd \"\$1\"" _ "$1" >/dev/null 2>&1
   else
-    ( bash -c "$CFG_NOTIFY_COMMAND \"\$1\"" _ "$1" >/dev/null 2>&1 & )
+    ( bash -c "$_cmd \"\$1\"" _ "$1" >/dev/null 2>&1 & )
   fi
 }
 
+# notify_channel_cmd <name> — the command behind a named notify channel
+# (config key notify-channel-<name>); rc 1 when no such channel.
+notify_channel_cmd() {
+  local i
+  for i in "${!NOTIFY_CH_NAMES[@]}"; do
+    [ "${NOTIFY_CH_NAMES[$i]}" = "$1" ] && { printf '%s' "${NOTIFY_CH_CMDS[$i]}"; return 0; }
+  done
+  return 1
+}
+# Emitted inside the ## Config block by write_sessions_file.
+notify_channels_render() {
+  local i
+  for i in "${!NOTIFY_CH_NAMES[@]}"; do
+    printf 'notify-channel-%s: %s\n' "${NOTIFY_CH_NAMES[$i]}" "${NOTIFY_CH_CMDS[$i]}"
+  done
+}
+
 notify() {
-  local key="$1" msg="$2"
-  if [ -z "${CFG_NOTIFY_COMMAND:-}" ]; then notify_log_line OFF "$key" "$msg"; return 0; fi
+  local key="$1" msg="$2" route_cmd=""
+  # Per-task routing: NOTIFY_ROUTE names a channel (task opt notify=<name>);
+  # unknown names fall back to the default stream, loudly in the log.
+  if [ -n "${NOTIFY_ROUTE:-}" ]; then
+    route_cmd=$(notify_channel_cmd "$NOTIFY_ROUTE") \
+      || sched_log "NOTIFY unknown channel '$NOTIFY_ROUTE' for $key (falling back to notify-command)"
+  fi
+  if [ -z "$route_cmd" ] && [ -z "${CFG_NOTIFY_COMMAND:-}" ]; then notify_log_line OFF "$key" "$msg"; return 0; fi
   local d="$SCHEDULE_STATE_DIR/notify"; mkdir -p "$d" 2>/dev/null
   local safe; safe=$(printf '%s' "$key" | tr -c 'A-Za-z0-9._-' '_')
   local f="$d/$safe" now last=0; now=$(date +%s)
   [ -f "$f" ] && last=$(cat "$f" 2>/dev/null || echo 0)
   if [ $((now - last)) -lt "$NOTIFY_COOLDOWN" ]; then notify_log_line THROTTLED "$key" "$msg"; return 0; fi
   printf '%s\n' "$now" > "$f"
+  NOTIFY_SEND_CMD="$route_cmd"
   notify_send "$msg"
-  notify_log_line SENT "$key" "$msg"
+  NOTIFY_SEND_CMD=""
+  notify_log_line SENT "$key" "$msg${route_cmd:+ [channel:$NOTIFY_ROUTE]}"
   sched_log "NOTIFY $key"
   return 0
 }
@@ -4918,16 +4968,71 @@ claude_login_check() {
 # notify_now <key> <msg> — like notify but NEVER throttled: for messages that
 # are each individually wanted (run reports), not recurring-condition alerts.
 notify_now() {
-  local key="$1" msg="$2"
-  if [ -z "${CFG_NOTIFY_COMMAND:-}" ]; then notify_log_line OFF "$key" "$msg"; return 0; fi
+  local key="$1" msg="$2" route_cmd=""
+  if [ -n "${NOTIFY_ROUTE:-}" ]; then
+    route_cmd=$(notify_channel_cmd "$NOTIFY_ROUTE") \
+      || sched_log "NOTIFY unknown channel '$NOTIFY_ROUTE' for $key (falling back to notify-command)"
+  fi
+  if [ -z "$route_cmd" ] && [ -z "${CFG_NOTIFY_COMMAND:-}" ]; then notify_log_line OFF "$key" "$msg"; return 0; fi
+  NOTIFY_SEND_CMD="$route_cmd"
   notify_send "$msg"
-  notify_log_line SENT "$key" "$msg"
+  NOTIFY_SEND_CMD=""
+  notify_log_line SENT "$key" "$msg${route_cmd:+ [channel:$NOTIFY_ROUTE]}"
   return 0
 }
 
 sched_log() {
   mkdir -p "$SCHEDULE_STATE_DIR" 2>/dev/null
   printf '%s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >> "$SCHEDULE_LOG"
+}
+
+# cmd_notify_verb — `notify [--channel <name>] "<message>"` | `notify --list`.
+# The door for TASK AGENTS (and humans) to send through Nexus's own routing:
+# a task's prompt can end with "report via: <tool> notify --channel ops
+# '<one line>'" and the message rides the same plumbing, logged in the notify
+# log like every alert. Unthrottled (a deliberate send is individually wanted)
+# and synchronous (the caller gets an honest exit code).
+cmd_notify_verb() {
+  local ch="" listonly="" msg="" rc=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --channel)   ch="${2:-}"; [ $# -gt 1 ] && shift ;;
+      --channel=*) ch="${1#--channel=}" ;;
+      --list)      listonly=1 ;;
+      *) msg="$msg${msg:+ }$1" ;;
+    esac
+    shift
+  done
+  if [ -n "$listonly" ]; then
+    echo "default: ${CFG_NOTIFY_COMMAND:-(notify-command is off)}"
+    local i
+    for i in "${!NOTIFY_CH_NAMES[@]}"; do
+      printf '%s: %s\n' "${NOTIFY_CH_NAMES[$i]}" "${NOTIFY_CH_CMDS[$i]}"
+    done
+    [ ${#NOTIFY_CH_NAMES[@]} -eq 0 ] && echo "(no named channels; add config lines like: notify-channel-ops: <command>)"
+    return 0
+  fi
+  if [ -z "$msg" ]; then
+    echo "usage: $(tool_cmd) notify [--channel <name>] \"<message>\"   (or: notify --list)" >&2
+    return 1
+  fi
+  local cmd="${CFG_NOTIFY_COMMAND:-}"
+  if [ -n "$ch" ]; then
+    if ! cmd=$(notify_channel_cmd "$ch"); then
+      echo "ERROR: no channel '$ch' (config key notify-channel-$ch in sessions.md). 'notify --list' shows them." >&2
+      return 1
+    fi
+  fi
+  if [ -z "$cmd" ]; then
+    echo "ERROR: notify-command is off and no --channel given; nothing to send with." >&2
+    return 1
+  fi
+  NOTIFY_SEND_CMD="$cmd"; NOTIFY_SYNC=1
+  notify_send "$msg"; rc=$?
+  NOTIFY_SEND_CMD=""; NOTIFY_SYNC=""
+  notify_log_line SENT "cli${ch:+-$ch}" "$msg"
+  if [ "$rc" -eq 0 ]; then echo "Sent."; else echo "ERROR: the send command exited rc=$rc" >&2; fi
+  return "$rc"
 }
 
 # --- run reports ---------------------------------------------------------------
@@ -5061,6 +5166,19 @@ digest_render() {
   printf '| runs skipped (too late) | %s |\n' "${DG_SKIPS:-0}"
   printf '| bus requests delivered | %s |\n' "${DG_BUS_OK:-0}"
   printf '| bus requests failed | %s |\n' "${DG_BUS_FAIL:-0}"
+  if ctx_watch_enabled && ctx_report_on digest && [ ${#ACTIVE_NAMES[@]} -gt 0 ]; then
+    echo ""
+    echo "## Context (per active session)"
+    echo ""
+    local _dgc_n _dgc_p _dgc_any=""
+    for _dgc_n in "${ACTIVE_NAMES[@]}"; do
+      _dgc_p=$(ctx_pct_stamp "$_dgc_n")
+      case "$_dgc_p" in ''|*[!0-9]*) continue ;; esac
+      printf -- '- %s: %s%%\n' "$_dgc_n" "$_dgc_p"
+      _dgc_any=1
+    done
+    [ -z "$_dgc_any" ] && echo "_(no readings yet)_"
+  fi
   echo ""
   echo "## What the runs said"
   echo ""
@@ -5496,7 +5614,12 @@ write_scheduled_tasks_template() {
 #                                in the scheduler state dir
 #               may-fire=<a,b>   caller tokens allowed to fire this task.
 #                                Tokens are names, not secrets (v1); the
-#                                scheduler and the menu are always allowed.
+#                                scheduler, the menu, and the Telegram
+#                                control bot are always allowed.
+#               notify=<name>    route THIS task's failure/drop alerts to
+#                                the named channel (config line
+#                                notify-channel-<name>: <command>) instead
+#                                of the default notify-command.
 #
 # Example (remove the leading '# ' to activate):
 # ### vault-weekly
@@ -5558,11 +5681,12 @@ sched_opt() {
 }
 
 # fire_caller_allowed <caller> <comma-list> — rc 0 when <caller> may fire a
-# task carrying that may-fire list. The scheduler (timer/tick fires) and the
-# interactive menu (a human at the keyboard) are always allowed: may-fire
-# exists to stop script/habit sprawl, not the owner or the task's own clock.
+# task carrying that may-fire list. The scheduler (timer/tick fires), the
+# interactive menu, and the Telegram control bot (its chat-id allowlist
+# already proved the human) are always allowed: may-fire exists to stop
+# script/habit sprawl, not the owner or the task's own clock.
 fire_caller_allowed() {
-  case "$1" in scheduler|menu) return 0;; esac
+  case "$1" in scheduler|menu|telegram) return 0;; esac
   local rest="$2," part
   while [ -n "$rest" ]; do
     part="${rest%%,*}"; rest="${rest#*,}"
@@ -6731,7 +6855,9 @@ fire_task() {
     else
       sched_log "SCRIPT task=$want FAILED rc=$srcc caller=$caller (tail saved: script-runs/$want.last)"
       runs_log_line "RUN-FAILED task=$want session=- (script rc=$srcc)"
+      NOTIFY_ROUTE=$(sched_opt "$idx" notify)
       notify "script-fail-$want" "Agent Nexus: scheduled script task '$want' failed (rc=$srcc). Output tail: $SCHEDULE_STATE_DIR/script-runs/$want.last"
+      NOTIFY_ROUTE=""
     fi
     return 0
   fi
@@ -6764,6 +6890,14 @@ fire_task() {
   if [ -n "$is_managed" ] && [ "$PKG_RESET" = "compact" ] && [ "${RESUME_SUMMARIZED:-}" = "$sess" ]; then
     sched_log "fire $want: skipping /compact on $sess (it just resumed from a summary)"
     RESUME_SUMMARIZED=""
+  elif [ -n "$is_managed" ] && [ "$PKG_RESET" = "compact" ] && ctx_smart_reset_skip "$sess"; then
+    # Smart reset: the gauge says there is nothing accumulated to shed.
+    sched_log "fire $want: smart reset - /compact skipped on $sess (context ${CTX_SMART_PCT}% < act $(ctx_act_pct)%)"
+    # The run itself still gets its memory protocol below.
+    if [ "$PKG_MEMORY" = "read-write" ]; then
+      tracked_lookup "$sess" && state_md_ensure_dir "$(resolve_path "$TL_PATH")"
+      prompt="$prompt $(state_rw_instruction "$sess")"
+    fi
   elif [ -n "$is_managed" ]; then
     case "$PKG_RESET" in
       clear|compact)
@@ -6867,9 +7001,10 @@ fire_task() {
 # on a 6h timeout (with a notify - "queued" must never mean "silently gone"),
 # or when the task disappeared / no longer allows the caller.
 fire_spool_drain() {
-  local now="$1" d="$SCHEDULE_STATE_DIR/fire-spool" f base id ep caller rc seen=""
+  local now="$1" d="$SCHEDULE_STATE_DIR/fire-spool" f base id ep caller rc seen="" _di _didx
   [ -d "$d" ] || return 0
   FIRE_FROM_SPOOL=1
+  parse_scheduled_tasks
   for f in "$d"/*; do
     [ -f "$f" ] || continue
     base="${f##*/}"; ep="${base##*.}"; id="${base%.*}"
@@ -6883,7 +7018,10 @@ fire_spool_drain() {
     if [ $((now - ep)) -gt "${FIRE_SPOOL_MAX_AGE:-21600}" ]; then
       rm -f "$f"
       sched_log "SPOOL DROP task=$id caller=$caller queued $(sched_fmt_epoch "$ep") never delivered (past the 6h cap)"
+      _didx=-1; for _di in "${!SCHED_IDS[@]}"; do [ "${SCHED_IDS[$_di]}" = "$id" ] && { _didx=$_di; break; }; done
+      [ "$_didx" -ge 0 ] && NOTIFY_ROUTE=$(sched_opt "$_didx" notify)
       notify "fire-spool-$id" "Agent Nexus: a queued fire of '$id' (from $caller) was DROPPED after 6h - its target session never freed up. Fire it again by hand when the target is idle."
+      NOTIFY_ROUTE=""
       continue
     fi
     FIRE_CALLER="$caller"
@@ -6957,7 +7095,7 @@ boot_restore_run() {
     ensure_target_alive "$n"; local rc=$?
     target_lock_release "$n"
     case "$rc" in
-      0) ok=$((ok+1)) ;;
+      0) ok=$((ok+1)); ctx_report boot "$n" ;;
       2|3) skipped=$((skipped+1)) ;;   # grace-parked / live elsewhere — fine
       *) failed=$((failed+1)); sched_log "BOOT-RESTORE $n: unrecoverable (rc=$rc)" ;;
     esac
@@ -7005,7 +7143,7 @@ keepalive_run() {
     ensure_target_alive "$sess"; rc=$?
     target_lock_release "$sess"
     case "$rc" in
-      0)   sched_log "KEEPALIVE $sess: healed (was down)" ;;
+      0)   sched_log "KEEPALIVE $sess: healed (was down)"; ctx_report heal "$sess" ;;
       2|3) : ;;   # grace-parked / conversation live elsewhere - quiet
       *)   sched_log "KEEPALIVE $sess: heal failed (rc=$rc); will retry next tick"
            notify "keepalive-$sess" "Agent Nexus: managed session '$sess' is DOWN and could not be healed (rc=$rc). It will keep retrying every 15 min." ;;
@@ -7241,11 +7379,34 @@ Agent Nexus commands:
 /login <name>      run /login there and send back the sign-in URL
 /code <code>       paste the sign-in code back (single use, 10 min)
 /digest            today's digest, if one has been written
+/compact <name>    ask a session to wrap up docs-first and compact
+/fire <task-id>    fire a scheduled/event task now (busy target = queued)
 /help              this list
 
 Names must be sessions this tool already knows.
 There is no way to send free text into a session from here.
 TGCHELP
+}
+
+# tgc_do_compact <name> — the phone's "wrap up and compact": types the same
+# docs-first steer tier 3 uses. A human override, so the tier-3 eligibility
+# gates (managed, thresholds, pause, throttle) deliberately do not apply; the
+# 6h steer stamp IS written so tier 3 does not double-nudge right after.
+tgc_do_compact() {
+  local n="$1" sock; sock=$(sched_tmux_socket)
+  if ! tmux -S "$sock" has-session -t "$n" 2>/dev/null; then
+    printf '%s' "'$n' has no tmux session right now. Try /heal $n first."
+    return 0
+  fi
+  local pct; pct=$(ctx_pct_stamp "$n")
+  case "$pct" in ''|*[!0-9]*) pct="?" ;; esac
+  tmux -S "$sock" send-keys -t "$n" -l "$(ctx_steer_text "$pct")"
+  sleep 1
+  tmux -S "$sock" send-keys -t "$n" Enter
+  mkdir -p "$(ctx_state_dir)" 2>/dev/null
+  date +%s > "$(ctx_state_dir)/$n.steered"
+  sched_log "CTX-STEER $n (phone /compact)"
+  printf '%s' "Asked '$n' to finish its unit, refresh the handoff and docs, then compact (context: ${pct}%). It acts when it next reads its input."
 }
 
 # tgc_do_heal <name> — the phone's "bring it back". Reuses the same heal path
@@ -7505,7 +7666,7 @@ tgc_handle() {
 
   # Verbs that take a session name all validate it the same way, once, here.
   case "$verb" in
-    heal|launch|rc|login|approve|deny)
+    heal|launch|rc|login|approve|deny|compact)
       if [ -z "$arg" ]; then
         tgc_audit "REFUSED $verb: no session name given"
         tgc_send "/$verb needs a session name. Try /sessions to see them."
@@ -7582,6 +7743,46 @@ $RC_URL}"
       fi
       tgc_audit "OK code (delivered to the pinned session)"
       body=$(tgc_do_code "$arg") ;;
+    compact)
+      tgc_audit "OK compact $arg"
+      body=$(tgc_do_compact "$arg") ;;
+    fire)
+      # /fire <task-id>: id validated against the real task list, then fired
+      # with caller=telegram (always allowed; the chat allowlist is the auth).
+      if [ -z "$arg" ]; then
+        tgc_audit "REFUSED fire: no task id given"
+        tgc_send "/fire needs a task id (the schedule menu lists them)."
+        return 0
+      fi
+      parse_scheduled_tasks
+      local _fi _fok=""
+      for _fi in "${!SCHED_IDS[@]}"; do [ "${SCHED_IDS[$_fi]}" = "$arg" ] && { _fok=1; break; }; done
+      if [ -z "$_fok" ]; then
+        tgc_audit "REFUSED fire: '$(printf '%.40s' "$arg")' is not a known task id"
+        tgc_send "I do not know a task with that id."
+        return 0
+      fi
+      tgc_audit "OK fire $arg"
+      tgc_send "Firing '$arg'..."
+      FIRE_CALLER="telegram"
+      fire_task "$arg"; local _frc=$?
+      FIRE_CALLER=""
+      case "$_frc" in
+        0) if [ -n "${FIRE_SCRIPT_RC:-}" ] && [ "$FIRE_SCRIPT_RC" != "0" ]; then
+             body="'$arg' ran but its script FAILED (rc=$FIRE_SCRIPT_RC). See Tools > Alerts and run reports."
+           else
+             body="Fired '$arg'."
+           fi ;;
+        1) body="The target session for '$arg' is not running. /heal it first." ;;
+        2) if [ -n "${FIRE_SPOOLED:-}" ]; then
+             body="Target busy - QUEUED. '$arg' retries every 15 min for up to 6h."
+           else
+             body="Target for '$arg' looked busy. Try again when it is idle."
+           fi ;;
+        4) body="REFUSED: '$arg' does not list the phone in may-fire." ;;
+        5) body="Check passed for '$arg' - nothing to deliver (that quiet skip is the design)." ;;
+        *) body="Could not fire '$arg' (rc=$_frc)." ;;
+      esac ;;
     digest)
       tgc_audit "OK digest"
       local dg; dg=$(digest_latest_path 2>/dev/null)
@@ -7827,7 +8028,9 @@ cmd_tick() {
       # nothing to distinguish it from a normal stale skip).
       if [ -f "$bp" ]; then
         sched_log "WARN task=$id occurrence $(sched_fmt_epoch "$occ") closed UNFIRED after $(cat "$bp" 2>/dev/null || echo '?') busy-park(s) - the target never freed; see the BUSY layer lines above"
+        NOTIFY_ROUTE=$(sched_opt "$i" notify)
         notify "unfired-$id" "Agent Nexus: scheduled task '$id' NEVER RAN - its target session stayed busy for the whole catch-up window. It won't retry until its next scheduled time. See Tools > Alerts and run reports."
+        NOTIFY_ROUTE=""
         rm -f "$bp"
       else
         sched_log "SKIP task=$id stale occurrence $(sched_fmt_epoch "$occ") (> ${SCHED_CATCHUP_MAX}s late); closed without firing"
@@ -7870,7 +8073,9 @@ cmd_tick() {
         if [ "$pfn" -ge "${PROBE_FAIL_MAX:-3}" ]; then
           sched_set_last_fired "$id" "$occ"   # park it; stop re-delivering
           sched_log "WARN task=$id occurrence $(sched_fmt_epoch "$occ") ABANDONED after $pfn unresponsive deliveries to '${SCHED_SESSIONS[$i]}' - not retried until its next scheduled time"
+          NOTIFY_ROUTE=$(sched_opt "$i" notify)
           notify_now "probe-abandon-$id" "Agent Nexus: scheduled task '$id' has failed $pfn times in a row - its session '${SCHED_SESSIONS[$i]}' accepts the prompt but never reacts. This occurrence has been given up on; it will not retry until its next scheduled time. Attach to '${SCHED_SESSIONS[$i]}' and see what it is stuck on."
+          NOTIFY_ROUTE=""
           rm -f "$pf"
         else
           sched_log "RETRY task=$id delivered but pane unresponsive (probe, $pfn/${PROBE_FAIL_MAX:-3}); NOT marked handled"
@@ -8697,7 +8902,8 @@ write_packages_template() {
 #   permission-mode: bypass       # bypass | auto | ask  (launch permission flag)
 #   memory:  none                 # none | read | read-write (STATE.md contract)
 #   reset:   none                 # none | compact | clear (context wipe before a run)
-#   checkpoint-compact: off       # off | on (self-compact at model-declared checkpoints)
+#   checkpoint-compact: off       # off | on | clear (self-compact at model-declared
+#                                 # checkpoints; clear = checkpoint by /clear instead)
 #   keep-alive: default           # default | on | off (heal this session every tick if down)
 #
 # Defaults when a key is missing: heal=resume, permission-mode=bypass, memory=none,
@@ -8734,7 +8940,7 @@ write_packages_template() {
 #               instruction-file jobs. /clear mints a NEW conversation id, so the
 #               scheduler re-captures it into sessions.md automatically. Pair with
 #               memory:read-write to keep durable notes across the wipe.
-#   checkpoint-compact: when on, the session compacts its OWN context at boundaries
+#   checkpoint-compact: when on (or clear), the session sheds its OWN context at boundaries
 #     it declares by running `agent-nexus compact-checkpoint` (after committing +
 #     updating docs, then ending its turn). The tool queues /compact and re-prompts it
 #     to continue. Set up fully with `enable-checkpoint-compact <session>` (installs
@@ -9946,9 +10152,32 @@ cmd_compact_checkpoint() {
   [ -z "$sess" ] && { echo "ERROR: could not determine the calling session from \$TMUX." >&2; return 1; }
 
   local steer cont
-  steer=$(ckpt_build_steer "$next")
   cont=$(ckpt_build_continue "$next")
 
+  # checkpoint-compact: clear = checkpoint by CLEARING instead of compacting.
+  # For stateless recurring work a summary is dead weight; the docs the model
+  # just wrote ARE the memory, so /clear + re-read beats /compact. The session
+  # decides nothing here: its managed checkpoint-compact field decides.
+  parse_packages
+  local ckind=""; pkg_lookup "$sess" && ckind="$PKG_CKPT"
+  if [ "$ckind" = "clear" ]; then
+    # /clear starts a NEW conversation id; hand the waiter what it needs to
+    # re-capture that id into sessions.md (same re-capture fire_task does),
+    # or a later heal would resume the pre-clear conversation.
+    local cdir="" cts; cts=$(date +%s)
+    tracked_lookup "$sess" && cdir=$(resolve_path "$TL_PATH")
+    sched_log "CHECKPOINT session=$sess kind=clear${next:+ next=\"$next\"}"
+    tmux -S "$sock" send-keys -t "$sess" "/clear"
+    sleep 1
+    tmux -S "$sock" send-keys -t "$sess" Enter
+    nohup bash "$SCRIPT_DIR/sessions.sh" _compact-resume-waiter "$sock" "$sess" "$cont" "$cdir" "$cts" </dev/null >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+    echo "Checkpoint (CLEAR variant) recorded for '$sess'. The clear fires when you END YOUR TURN NOW."
+    echo "Do not keep working; the tool will re-prompt you to continue from your docs."
+    return 0
+  fi
+
+  steer=$(ckpt_build_steer "$next")
   sched_log "CHECKPOINT session=$sess${next:+ next=\"$next\"}"
   tmux -S "$sock" send-keys -t "$sess" "$steer"
   sleep 1
@@ -9967,7 +10196,7 @@ cmd_compact_checkpoint() {
 # leaves the session idle (a human or the next checkpoint recovers). Never assumes
 # post-compaction behavior.
 cmd_compact_resume_waiter() {
-  local sock="$1" sess="$2" cont="$3"
+  local sock="$1" sess="$2" cont="$3" cleardir="${4:-}" clearts="${5:-}"
   local ready="CKPT-READY-9f3c" prev="" cur="" stable=0 waited=0
   # 1) Wait for a SUSTAINED-idle pane so we skip the brief idle before /compact fires.
   while [ "$waited" -lt 300 ]; do
@@ -9999,6 +10228,22 @@ cmd_compact_resume_waiter() {
   tmux -S "$sock" send-keys -t "$sess" "$cont"
   sleep 1; tmux -S "$sock" send-keys -t "$sess" Enter
   sched_log "RESUME $sess: compaction complete, session resumed"
+  # Clear variant: the conversation id changed; put the NEW one in the
+  # registry so the next heal resumes the post-clear conversation.
+  if [ -n "$cleardir" ]; then
+    local newid tries=0
+    while [ "$tries" -lt 5 ]; do
+      newid=$(capture_new_session_id "$cleardir" "$clearts")
+      [ -n "$newid" ] && break
+      sleep 2; tries=$((tries + 1))
+    done
+    if [ -n "$newid" ]; then
+      set_tracked_id "$sess" "$newid" && write_sessions_file
+      sched_log "RESUME $sess: re-captured post-clear conversation $newid into sessions.md"
+    else
+      sched_log "RESUME $sess: cleared but could not capture the new conversation id (check sessions.md)"
+    fi
+  fi
   return 0
 }
 
@@ -10090,7 +10335,10 @@ cmd_enable_checkpoint_compact() {
   fi
   parse_packages
   pkg_lookup "$sess" || { pkg_register "$sess" >/dev/null; parse_packages; }
-  local i; for i in "${!PKG_NAMES[@]}"; do [ "${PKG_NAMES[$i]}" = "$sess" ] && PKG_CKPTS[$i]="on"; done
+  # "clear" is a stronger form of on; the full setup must not demote it.
+  local i; for i in "${!PKG_NAMES[@]}"; do
+    [ "${PKG_NAMES[$i]}" = "$sess" ] && [ "${PKG_CKPTS[$i]}" != "clear" ] && PKG_CKPTS[$i]="on"
+  done
   write_managed
   echo "Marked '$sess' checkpoint-compact: on in managed-sessions.md."
 
@@ -10300,7 +10548,10 @@ managed_edit_fields() {
               echo "  When ON, this session sheds its own context on long runs: at safe checkpoints"
               echo "  it declares (after committing + updating its docs) it runs compact-checkpoint,"
               echo "  which compacts the conversation and re-prompts it to continue. Cuts token cost."
-              v=$(pick_option "checkpoint-compact (now: $cur_c)" "[ keep current: $cur_c ]" off on)
+              echo "  clear = same protocol, but the checkpoint CLEARS instead of compacting (new"
+              echo "  conversation, id re-captured; the docs it just wrote ARE the memory). For"
+              echo "  stateless recurring work where a carried summary is dead weight."
+              v=$(pick_option "checkpoint-compact (now: $cur_c)" "[ keep current: $cur_c ]" off on clear)
               case "$v" in ""|"[ keep"*) return 0 ;; *) PKG_CKPTS[$idx]="$v" ;; esac ;;
     keep-alive*)
               local cur_k="${PKG_KEEPALIVES[$idx]}"
@@ -10314,7 +10565,7 @@ managed_edit_fields() {
   write_managed && { echo "  Updated '$pick'."; action_log "auto-manage setting changed: $pick"; }
   # Flipping checkpoint-compact ON needs more than the flag: hooks + the
   # compaction-safe CLAUDE.md discipline. Offer the full setup right here.
-  if [[ "$f" == checkpoint-compact* ]] && [ "$v" = "on" ]; then
+  if [[ "$f" == checkpoint-compact* ]] && { [ "$v" = "on" ] || [ "$v" = "clear" ]; }; then
     local full
     full=$(pick_yesno "  Run the full checkpoint-compaction setup for '$pick' now (installs hooks + offers the CLAUDE.md discipline)?" \
       "Yes — run the full setup" "No — just flip the flag" yes)
@@ -11038,7 +11289,11 @@ cmd_settings() {
     _cfg_note "$(config_backup_dir)"
     _cfg_note "(change the destination when enabling; ~/.claude has no sync of its own)"
     local cw="${CFG_CONTEXT_WATCH:-on}" cwn="${CFG_CONTEXT_NOTICE:-45}" cwa="${CFG_CONTEXT_ACT:-60}" cwt="${CFG_CONTEXT_TELEGRAM:-off}"
+    local crp="${CFG_CONTEXT_REPORT:-all}"
     _cfg_row "context-watch" "$cw (notice ${cwn}%, act ${cwa}%, telegram $cwt)"
+    _cfg_row "context-report" "$crp"
+    _cfg_note "context percent logged after heal / restore / boot-restore + a digest section;"
+    _cfg_note "all, off, or a comma list of those event words"
     _cfg_note "on = every tick reads each Active session's context occupancy from its"
     _cfg_note "own transcript (free; nothing is typed into sessions) and shows it: hub"
     _cfg_note "ctx:NN% badges, a status-panel line past the thresholds, /status, and a"
@@ -11048,7 +11303,7 @@ cmd_settings() {
     local act
     act=$(pick_option "Edit which setting? (writes to sessions.md; Esc backs out)" \
       "permission-mode   (now: $pm)" "chrome   (now: $ch)" "remote-control   (now: $rc)" \
-      "boot-restore   (now: $br)" "catchup-hours   (now: $cu)" "keep-alive   (now: $ka)" "stale-weeks   (now: $sw)" "update-require-signed   (now: $urs)" "action-log   (now: $al)" "resume-mode   (now: $rm2)" "config-backup   (now: $cb)" "context-watch   (now: $cw, ${cwn}/${cwa}%)" "notify-command   (advanced — prefer the Telegram setup below)" "notify-level   (now: $nl)" "Playbooks — append process packs to a CLAUDE.md" "Back up Claude config now" "Set up Telegram notifications (guided)" "Set up Telegram CONTROL from your phone (guided)" "Set up the agent-bus SSH door (remote senders)" "Update Agent Nexus (pull the latest from GitHub)" "[ run setup wizard ]" "[ done ]")
+      "boot-restore   (now: $br)" "catchup-hours   (now: $cu)" "keep-alive   (now: $ka)" "stale-weeks   (now: $sw)" "update-require-signed   (now: $urs)" "action-log   (now: $al)" "resume-mode   (now: $rm2)" "config-backup   (now: $cb)" "context-watch   (now: $cw, ${cwn}/${cwa}%)" "context-report   (now: $crp)" "notify-command   (advanced — prefer the Telegram setup below)" "notify-level   (now: $nl)" "Playbooks — append process packs to a CLAUDE.md" "Back up Claude config now" "Set up Telegram notifications (guided)" "Set up Telegram CONTROL from your phone (guided)" "Set up the agent-bus SSH door (remote senders)" "Update Agent Nexus (pull the latest from GitHub)" "[ run setup wizard ]" "[ done ]")
     local v
     case "$act" in
       permission-mode*)
@@ -11143,6 +11398,24 @@ cmd_settings() {
             *) CFG_CONTEXT_WINDOW="$v" ;;
           esac
         fi ;;
+      context-report*)
+        echo "  Where the context gauge is REPORTED beyond the hub: a schedule-log line"
+        echo "  after a session is healed (heal), after 'restore' (restore), after the"
+        echo "  post-reboot sweep (boot), and a per-session section in the daily digest"
+        echo "  (digest)."
+        v=$(pick_option "Context reporting? (now: $crp)" "[ keep current: $crp ]" all off "pick individual events")
+        case "$v" in
+          all) CFG_CONTEXT_REPORT="all" ;;
+          off) CFG_CONTEXT_REPORT="off" ;;
+          pick*)
+            read -r -p "  Events, comma-separated, from: heal,restore,boot,digest: " v
+            v=$(printf '%s' "$v" | tr -d ' ')
+            case "$v" in
+              '') ;;
+              *[!a-z,]*) echo "  (only those four words, comma-separated; keeping $crp)" ;;
+              *) CFG_CONTEXT_REPORT="$v" ;;
+            esac ;;
+        esac ;;
       "Playbooks"*)
         cmd_playbooks
         parse_sessions_file
@@ -11356,7 +11629,7 @@ hub_auto_badges() {
         compact) out="$out rst:compact" ;;
         clear)   out="$out rst:clear" ;;
       esac
-      [ "${PKG_CKPTS[$i]}" = "on" ] && out="$out ckpt"
+      case "${PKG_CKPTS[$i]}" in on) out="$out ckpt" ;; clear) out="$out ckpt:clear" ;; esac
       [ "${PKG_KEEPALIVES[$i]}" = "off" ] && out="$out ka:off"
       break
     fi
@@ -11899,6 +12172,52 @@ ctx_usage() {
 # ctx_pct_stamp <name> -> the last SWEPT percent (cheap; for badges).
 ctx_pct_stamp() { awk '{print $2; exit}' "$(ctx_state_dir)/$1.last" 2>/dev/null; }
 
+# ctx_smart_reset_skip <name> — rc 0 when the pre-run /compact can be skipped:
+# reset:compact exists to shed ACCUMULATED context, and below the act threshold
+# there is nothing worth shedding (a compact would cost ~2 min + tokens for no
+# gain). Only ever skips on a KNOWN-low reading: watch off or no stamp = never
+# skip, keep today's behavior. /clear is never smart-skipped (it means "throw
+# the history away", which is not about volume). Sets CTX_SMART_PCT for logs.
+ctx_smart_reset_skip() {
+  CTX_SMART_PCT=""
+  ctx_watch_enabled || return 1
+  local p; p=$(ctx_pct_stamp "$1")
+  case "$p" in ''|*[!0-9]*) return 1 ;; esac
+  CTX_SMART_PCT="$p"
+  [ "$p" -lt "$(ctx_act_pct)" ]
+}
+
+# ctx_report_on <heal|restore|boot|digest> — is context reporting enabled for
+# that lifecycle event? Setting: context-report = all (default) | off | a
+# comma list of event words ("heal,digest").
+ctx_report_on() {
+  local v="${CFG_CONTEXT_REPORT:-all}" rest part
+  case "$v" in all|'') return 0 ;; off|no|OFF|NO) return 1 ;; esac
+  rest="$v,"
+  while [ -n "$rest" ]; do
+    part="${rest%%,*}"; rest="${rest#*,}"
+    part=$(printf '%s' "$part" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    [ -n "$part" ] && [ "$part" = "$1" ] && return 0
+  done
+  return 1
+}
+
+# ctx_report <event> <name> — one schedule-log line with the session's LIVE
+# context percent after a lifecycle event (heal / restore / boot), so
+# recoveries carry the gauge without opening the hub. Quiet on any miss.
+ctx_report() {
+  local ev="$1" name="$2" out pct win
+  ctx_watch_enabled || return 0
+  ctx_report_on "$ev" || return 0
+  out=$(ctx_usage "$name") || return 0
+  pct=$(printf '%s' "$out" | awk '{print $3}')
+  win=$(printf '%s' "$out" | awk '{print $2}')
+  case "$pct" in ''|*[!0-9]*) return 0 ;; esac
+  case "$win" in ''|*[!0-9]*) win=0 ;; esac
+  sched_log "CTX $name ${pct}% of $((win / 1000))k window (after $ev)"
+  return 0
+}
+
 # ctx_watch_update <name> — refresh the stamp; append history on change; note
 # big drops (a compaction or clear) as events; act-threshold crossings go to
 # the action log and, when context-telegram is on, to the phone.
@@ -12003,7 +12322,7 @@ if [ "\$pct" -ge "\$act" ]; then
   if [ -f "\$SD/\$UUID.paused" ]; then
     echo "[context-watch] \${pct}% of the context window used. The watch is PAUSED by the user: keep working, do not compact; remind them the watch is paused."
   else
-    echo "[context-watch] \${pct}% of the context window used (act threshold \${act}%). Finish the current unit of work, update the handoff and docs, commit, then run: agent-nexus compact-checkpoint --next \"<the next step in one line>\" and END YOUR TURN. (The user can defer this with: agent-nexus context-watch pause)"
+    echo "[context-watch] \${pct}% of the context window used (act threshold \${act}%). Finish the current unit of work, update the handoff (_admin/handoffs/HANDOFF-\$(date +%Y-%m-%d).md) and docs, commit, then run: agent-nexus compact-checkpoint --next \"<the next step in one line>\" and END YOUR TURN. (The user can defer this with: agent-nexus context-watch pause)"
   fi
 else
   echo "[context-watch] \${pct}% of the context window used."
@@ -12102,7 +12421,7 @@ ctx_tier3_eligible() {  # <name> -> rc 0 when a steer should go
   local name="$1" i on="" pct d stamp now last
   ctx_watch_enabled || return 1
   for i in "${!PKG_NAMES[@]}"; do
-    [ "${PKG_NAMES[$i]}" = "$name" ] && { [ "${PKG_CKPTS[$i]}" = "on" ] && on=1; break; }
+    [ "${PKG_NAMES[$i]}" = "$name" ] && { case "${PKG_CKPTS[$i]}" in on|clear) on=1 ;; esac; break; }
   done
   [ -n "$on" ] || return 1
   d="$(ctx_state_dir)"
@@ -12119,7 +12438,7 @@ ctx_tier3_eligible() {  # <name> -> rc 0 when a steer should go
 }
 
 ctx_steer_text() {  # <pct> -> the injected instruction (pure; testable)
-  printf 'Context watch: your context is at %s%% of its window. Finish the current unit of work, update the handoff and docs, commit, then run: %s compact-checkpoint --next "<the next step in one line>" and END YOUR TURN.' "$1" "$(tool_cmd)"
+  printf 'Context watch: your context is at %s%% of its window. Finish the current unit of work, update the handoff (_admin/handoffs/HANDOFF-%s.md) and docs, commit, then run: %s compact-checkpoint --next "<the next step in one line>" and END YOUR TURN.' "$1" "$(date +%Y-%m-%d)" "$(tool_cmd)"
 }
 
 ctx_tier3_tick() {
@@ -13464,8 +13783,9 @@ Commands, ordered by how often you'll use them:
            your phone. Same flow, plus it records exactly one chat id as the
            allowlist. Afterwards you can send /status, /sessions, /heal <name>,
            /launch <name>, /rc <name>, /approve <name>, /deny <name>,
-           /login <name>, /code <code>, /digest and /help. There is no verb
-           that sends free text into a session. When a session parks on an
+           /login <name>, /code <code>, /digest, /compact <name>,
+           /fire <task-id> and /help. There is no verb that sends free text
+           into a session. When a session parks on an
            approval dialog (Chrome's per-site gate, an auto-mode pause), the
            watch texts you the question; /approve takes option 1, /deny
            dismisses it, and both act only if the dialog is still on screen.
@@ -13515,6 +13835,18 @@ Commands, ordered by how often you'll use them:
            has no sync or version history of its own. The config-backup
            setting (daily | weekly) runs this on the tick; the copy is a
            mirror, so history comes from the destination's own versioning.
+
+  notify [--channel <name>] "<message>"
+           Send a message through Nexus's alert routing: the default
+           notify-command, or a named channel defined as a config line
+           notify-channel-<name>: <command> in sessions.md. `notify --list`
+           shows them. This is how a task's agent reports somewhere
+           specific: end the task prompt with
+             report via: agent-nexus notify --channel ops "<one line>"
+           A second Telegram bot is one channel line:
+             notify-channel-ops: TELEGRAM_ENV_FILE="$HOME/.agent-nexus/telegram-ops.env" bash "<scripts dir>/notify-telegram.sh"
+           (that env file holds the other bot's token + chat id). A task can
+           also route its own FAILURE alerts: task opt notify=<channel>.
 
   watches  The background sensors riding the 15-minute tick: disk-space
            (NOTIFY-ONLY by design - no agent ever acts on it), backup
@@ -13792,7 +14124,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   # free) and the commands that already run their own backfill (sync/list/restore)
   # or own the backfill output (backfill).
   case "${1:-}" in
-    help|-h|--help|list-projects|list-dirs|quicknew|backfill|backfill-ids|sync|list|restore|tick|fire|process-inbox|submit|report|gen-session-settings|install-bus-key|compact-checkpoint|_compact-resume-waiter|enable-checkpoint-compact) ;;
+    help|-h|--help|list-projects|list-dirs|quicknew|backfill|backfill-ids|sync|list|restore|tick|fire|notify|process-inbox|submit|report|gen-session-settings|install-bus-key|compact-checkpoint|_compact-resume-waiter|enable-checkpoint-compact) ;;
     *)
       do_backfill_ids
       if [ ${#BF_FILLED[@]} -gt 0 ]; then
@@ -13809,6 +14141,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   if [ "${1:-}" != "help" ] && [ "${1:-}" != "-h" ] && [ "${1:-}" != "--help" ] \
      && [ "${1:-}" != "list-projects" ] && [ "${1:-}" != "list-dirs" ] \
      && [ "${1:-}" != "tick" ] && [ "${1:-}" != "fire" ] \
+     && [ "${1:-}" != "notify" ] \
      && [ "${1:-}" != "process-inbox" ] && [ "${1:-}" != "submit" ] \
      && [ "${1:-}" != "report" ] \
      && [ "${1:-}" != "install-bus-key" ] && [ "${1:-}" != "compact-checkpoint" ] \
@@ -13990,6 +14323,11 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     watches)
       shift
       cmd_watches "$@"
+      ;;
+    notify)
+      shift
+      cmd_notify_verb "$@"
+      exit $?
       ;;
     doctor)
       shift

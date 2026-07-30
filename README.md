@@ -62,7 +62,8 @@ keyboard shortcut (`Cmd+Shift+B`) reconnects to all of them as VS Code editor ta
   heals, runs that never fired) - and, if you want, each run's report.
 - **Telegram control** - a second, optional bot you can send commands to:
   `/status`, `/sessions`, `/heal <name>`, `/launch <name>`, `/approve <name>`,
-  `/deny <name>`, `/new <name> <project>`, `/login <name>`, `/code <code>`. It drives the TOOL, never
+  `/deny <name>`, `/new <name> <project>`, `/login <name>`, `/code <code>`,
+  `/compact <name>`, `/fire <task-id>`. It drives the TOOL, never
   free text into a session, and it answers in about a second. That last part
   is the point: it exists for the moment your sessions are down and remote
   control is unreachable, so a slow reply would be useless. It also watches
@@ -78,8 +79,15 @@ keyboard shortcut (`Cmd+Shift+B`) reconnects to all of them as VS Code editor ta
   warning line when a session crosses your thresholds (defaults: notice at
   45%, act at 60%), a `/status` line on the phone, and a per-session
   history log that reads as the session's context story (the climb, the
-  compaction cliffs). Passive by design: it measures and shows, and never
-  types into a session.
+  compaction cliffs). Tier 1 is passive by design: it measures and shows.
+  Opt-in per session, tier 2 shows the model its own percent every turn,
+  and tier 3 steers managed sessions into docs-first self-compaction (the
+  steer names the day's handoff file); a session can instead checkpoint by
+  CLEARING (`checkpoint-compact: clear`) when a carried summary would be
+  dead weight. The gauge also feeds the machinery: a pre-run
+  `reset: compact` is skipped when there is nothing to shed (smart reset),
+  and a `context-report` setting logs the percent after heals, restores,
+  and reboots, plus a per-session section in the daily digest.
 - **Playbooks** - opt-in process packs you can append to a CLAUDE.md of your
   choice: a doc-tracking system (QA log / review queue / backlog /
   changelog), living session handoffs, compaction-safe documentation
@@ -88,6 +96,12 @@ keyboard shortcut (`Cmd+Shift+B`) reconnects to all of them as VS Code editor ta
   pick the packs, see the exact text before anything is written, and the
   target file is backed up first; installing twice is a no-op. Menu:
   Settings + Setup > Playbooks, or `agent-nexus playbooks`.
+- **Notify channels + agent reporting** - alerts follow routes: named
+  channels (`notify-channel-<name>: <command>` config lines, e.g. a second
+  Telegram bot), a per-task `notify=<name>` option so a task's failure
+  alerts land where they belong, and an `agent-nexus notify
+  [--channel <name>] "<message>"` verb so the agent RUNNING a task can
+  file its own report through the same routing.
 - **Claude-config backup** - `~/.claude` holds your global CLAUDE.md,
   settings, and Claude's per-project memory, with no sync or version
   history of its own. `agent-nexus backup-claude-config` copies them to a
