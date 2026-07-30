@@ -712,12 +712,18 @@ agent-nexus managed         # menu: Auto-managed sessions
   `off`. When effective-on, the scheduler heals this session every tick if its
   tmux or Claude has died. Set `off` for a managed session you want to stay
   down when you kill it.
-- **checkpoint-compact**: `off` (default) or `on` - lets a long-running session
-  shed its own context to cut token cost. When on, the session compacts at
-  boundaries *it* declares: after committing a unit and updating its docs, it runs
+- **checkpoint-compact**: `off` (default), `compact`, or `clear` - the same
+  vocabulary as `reset` - lets a long-running session shed its own context to
+  cut token cost. With `compact`, the session compacts at boundaries *it*
+  declares: after committing a unit and updating its docs, it runs
   `agent-nexus compact-checkpoint --next "<next step>"` and ends its turn; the
   tool injects `/compact` (Claude Code can't self-trigger it), waits for it to
-  settle, confirms the session is responsive, then re-prompts it to continue. Set it
+  settle, confirms the session is responsive, then re-prompts it to continue.
+  With `clear`, the same protocol checkpoints by `/clear` instead (a brand-new
+  conversation, its id re-captured into the registry): the docs the session
+  just wrote ARE the memory, for stateless recurring work where a carried
+  summary is dead weight. (`on` is accepted as a legacy spelling of
+  `compact`.) Set it
   up with `agent-nexus enable-checkpoint-compact <session>` (also in the
   Automation menu), which installs the hooks and offers a compaction-safe
   documentation discipline for the project's `CLAUDE.md` (so nothing is lost when the

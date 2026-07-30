@@ -8902,8 +8902,9 @@ write_packages_template() {
 #   permission-mode: bypass       # bypass | auto | ask  (launch permission flag)
 #   memory:  none                 # none | read | read-write (STATE.md contract)
 #   reset:   none                 # none | compact | clear (context wipe before a run)
-#   checkpoint-compact: off       # off | on | clear (self-compact at model-declared
-#                                 # checkpoints; clear = checkpoint by /clear instead)
+#   checkpoint-compact: off       # off | compact | clear (shed context at model-
+#                                 # declared checkpoints; clear = /clear instead of
+#                                 # /compact; 'on' is accepted as legacy for compact)
 #   keep-alive: default           # default | on | off (heal this session every tick if down)
 #
 # Defaults when a key is missing: heal=resume, permission-mode=bypass, memory=none,
@@ -8940,7 +8941,7 @@ write_packages_template() {
 #               instruction-file jobs. /clear mints a NEW conversation id, so the
 #               scheduler re-captures it into sessions.md automatically. Pair with
 #               memory:read-write to keep durable notes across the wipe.
-#   checkpoint-compact: when on (or clear), the session sheds its OWN context at boundaries
+#   checkpoint-compact: when compact (or clear), the session sheds its OWN context at boundaries
 #     it declares by running `agent-nexus compact-checkpoint` (after committing +
 #     updating docs, then ending its turn). The tool queues /compact and re-prompts it
 #     to continue. Set up fully with `enable-checkpoint-compact <session>` (installs
@@ -9002,7 +9003,14 @@ parse_packages() {
                fi ;;
       memory)  [ -n "$val" ] && PKG_MEMORIES[$cur]="$val" ;;
       reset)   [ -n "$val" ] && PKG_RESETS[$cur]="$val" ;;
-      checkpoint-compact) [ -n "$val" ] && PKG_CKPTS[$cur]="$val" ;;
+      checkpoint-compact)
+               # 'on' is the legacy spelling of 'compact' (renamed 2026-07-29
+               # to match reset's compact|clear vocabulary); normalize on
+               # read, so the next write migrates the file.
+               if [ -n "$val" ]; then
+                 [ "$val" = "on" ] && val="compact"
+                 PKG_CKPTS[$cur]="$val"
+               fi ;;
       keep-alive) [ -n "$val" ] && PKG_KEEPALIVES[$cur]="$val" ;;
     esac
   done < "$MANAGED_FILE"
@@ -10114,7 +10122,7 @@ cmd_install_bus_key() {
 }
 
 # --- checkpoint compaction (Compaction Checkpoints - Design Spec) ------------
-# A managed session with checkpoint-compact:on sheds its context at boundaries IT
+# A managed session with checkpoint-compact:compact sheds its context at boundaries IT
 # declares (a unit committed, docs current), so long autonomous runs stop bloating
 # their context and burning tokens. Claude Code cannot self-trigger /compact, so the
 # model runs `compact-checkpoint` and ends its turn; the tool queues /compact into the
@@ -10315,7 +10323,7 @@ cmd_enable_checkpoint_compact() {
   cdim "  re-prompts it to continue where it left off."
   echo ""
   chead "Enabling does three things to the session you pick"
-  echo "  1. marks checkpoint-compact: on in managed-sessions.md (promotes the"
+  echo "  1. marks checkpoint-compact: compact in managed-sessions.md (promotes the"
   echo "     session to managed if it isn't yet),"
   echo "  2. installs two Claude Code hooks in the session's project dir (snapshot"
   echo "     before compact, re-inject after),"
@@ -10335,12 +10343,12 @@ cmd_enable_checkpoint_compact() {
   fi
   parse_packages
   pkg_lookup "$sess" || { pkg_register "$sess" >/dev/null; parse_packages; }
-  # "clear" is a stronger form of on; the full setup must not demote it.
+  # "clear" is a stronger form of compact here; the full setup must not demote it.
   local i; for i in "${!PKG_NAMES[@]}"; do
-    [ "${PKG_NAMES[$i]}" = "$sess" ] && [ "${PKG_CKPTS[$i]}" != "clear" ] && PKG_CKPTS[$i]="on"
+    [ "${PKG_NAMES[$i]}" = "$sess" ] && [ "${PKG_CKPTS[$i]}" != "clear" ] && PKG_CKPTS[$i]="compact"
   done
   write_managed
-  echo "Marked '$sess' checkpoint-compact: on in managed-sessions.md."
+  echo "Marked '$sess' checkpoint-compact: compact in managed-sessions.md."
 
   local dir=""
   for i in "${!ACTIVE_NAMES[@]}"; do
@@ -10545,13 +10553,14 @@ managed_edit_fields() {
               v=$(pick_option "reset (now: $cur_r)" "[ keep current: $cur_r ]" none compact clear)
               case "$v" in ""|"[ keep"*) return 0 ;; *) PKG_RESETS[$idx]="$v" ;; esac ;;
     checkpoint-compact*)
-              echo "  When ON, this session sheds its own context on long runs: at safe checkpoints"
+              echo "  Same vocabulary as reset: off | compact | clear."
+              echo "  compact = the session sheds its own context on long runs: at safe checkpoints"
               echo "  it declares (after committing + updating its docs) it runs compact-checkpoint,"
               echo "  which compacts the conversation and re-prompts it to continue. Cuts token cost."
               echo "  clear = same protocol, but the checkpoint CLEARS instead of compacting (new"
               echo "  conversation, id re-captured; the docs it just wrote ARE the memory). For"
               echo "  stateless recurring work where a carried summary is dead weight."
-              v=$(pick_option "checkpoint-compact (now: $cur_c)" "[ keep current: $cur_c ]" off on clear)
+              v=$(pick_option "checkpoint-compact (now: $cur_c)" "[ keep current: $cur_c ]" off compact clear)
               case "$v" in ""|"[ keep"*) return 0 ;; *) PKG_CKPTS[$idx]="$v" ;; esac ;;
     keep-alive*)
               local cur_k="${PKG_KEEPALIVES[$idx]}"
@@ -10565,7 +10574,7 @@ managed_edit_fields() {
   write_managed && { echo "  Updated '$pick'."; action_log "auto-manage setting changed: $pick"; }
   # Flipping checkpoint-compact ON needs more than the flag: hooks + the
   # compaction-safe CLAUDE.md discipline. Offer the full setup right here.
-  if [[ "$f" == checkpoint-compact* ]] && { [ "$v" = "on" ] || [ "$v" = "clear" ]; }; then
+  if [[ "$f" == checkpoint-compact* ]] && { [ "$v" = "compact" ] || [ "$v" = "clear" ]; }; then
     local full
     full=$(pick_yesno "  Run the full checkpoint-compaction setup for '$pick' now (installs hooks + offers the CLAUDE.md discipline)?" \
       "Yes — run the full setup" "No — just flip the flag" yes)
@@ -11629,7 +11638,7 @@ hub_auto_badges() {
         compact) out="$out rst:compact" ;;
         clear)   out="$out rst:clear" ;;
       esac
-      case "${PKG_CKPTS[$i]}" in on) out="$out ckpt" ;; clear) out="$out ckpt:clear" ;; esac
+      case "${PKG_CKPTS[$i]}" in compact|on) out="$out ckpt" ;; clear) out="$out ckpt:clear" ;; esac
       [ "${PKG_KEEPALIVES[$i]}" = "off" ] && out="$out ka:off"
       break
     fi
@@ -12412,7 +12421,7 @@ cmd_context_watch() {
 }
 
 # --- Context Watch tier 3: docs-first self-compaction (managed sessions) ------
-# For a managed session with checkpoint-compact:on, crossing the act threshold
+# For a managed session with checkpoint-compact:compact (or clear), crossing the act threshold
 # gets the steer typed in FROM OUTSIDE when the pane is idle: the model then
 # does its docs, runs compact-checkpoint, and the existing machinery compacts.
 # Throttled to one steer per session per 6h; pause/off respected.
@@ -12421,7 +12430,7 @@ ctx_tier3_eligible() {  # <name> -> rc 0 when a steer should go
   local name="$1" i on="" pct d stamp now last
   ctx_watch_enabled || return 1
   for i in "${!PKG_NAMES[@]}"; do
-    [ "${PKG_NAMES[$i]}" = "$name" ] && { case "${PKG_CKPTS[$i]}" in on|clear) on=1 ;; esac; break; }
+    [ "${PKG_NAMES[$i]}" = "$name" ] && { case "${PKG_CKPTS[$i]}" in compact|clear|on) on=1 ;; esac; break; }
   done
   [ -n "$on" ] || return 1
   d="$(ctx_state_dir)"
@@ -13728,7 +13737,7 @@ Commands, ordered by how often you'll use them:
 
   enable-checkpoint-compact [<session>]
             Set a session up to shed context on long runs: marks it
-            checkpoint-compact:on, installs the PreCompact + SessionStart hooks,
+            checkpoint-compact:compact, installs the PreCompact + SessionStart hooks,
             and offers (with a preview) the compaction-safe CLAUDE.md discipline.
             Also in the menu under Automation.
 
