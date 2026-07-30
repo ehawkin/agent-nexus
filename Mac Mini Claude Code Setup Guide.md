@@ -593,22 +593,73 @@ agent-nexus schedule        # menu: Add a task, then "Install / reload the ticke
 ```
 
 Each task lives in `scheduled-tasks.md` as `id | schedule | prompt | enabled`
-under a `### <target-session>` header. Schedules: a time alone means daily
-(`18:00`, `8am`, `7:30 pm`), `daily <time>` works too, and a weekday makes it
-weekly (`Sat 08:00`, `saturday 8pm`). Case, abbreviations, leading zeros, and
-am/pm spacing or periods all wash out; a bare hour with no am/pm is rejected
-as ambiguous. Best practice for the prompt: point it at an instruction file
-(the wizard offers this as a picker over the files in the session's
-directory), which stores `Read <file> and follow it.` The ticker gates each
-task per-occurrence (no double-fires), catches up a missed run within 12h,
-and skips a target that's busy (retries next tick).
+(plus an optional fifth `opts` field, below) under a `### <target-session>`
+header. Schedules: a time alone means daily (`18:00`, `8am`, `7:30 pm`),
+`daily <time>` works too, a weekday makes it weekly (`Sat 08:00`,
+`saturday 8pm`), `hourly` or `hourly :07` repeats every hour, and `event`
+means no timer at all (fired only on demand, next paragraph). Case,
+abbreviations, leading zeros, and am/pm spacing or periods all wash out; a
+bare hour with no am/pm is rejected as ambiguous. Best practice for the
+prompt: point it at an instruction file (the wizard offers this as a picker
+over the files in the session's directory), which stores `Read <file> and
+follow it.` The ticker gates each task per-occurrence (no double-fires),
+catches up a missed run within 12h, and skips a target that's busy (retries
+next tick).
 
-The wizard walks the whole setup: target session (shown with its project),
-id, schedule, what to do, and the target's automation settings (managed
+**Beyond timers.** The optional fifth field, `key=value;key=value`, unlocks
+three shapes (the wizard asks about all of them; values can't contain `|`
+or `;`, so wrap complex commands in a script file):
+
+- `kind=script`: the scheduler runs the prompt AS a shell command itself.
+  No session, no typing; output tail lands in `script-runs/<id>.last` in
+  the state dir and a failing script sends a notification. This is how a
+  plain launchd job (an hourly backup, a sweep) moves inside the tool.
+  QUOTE a path that contains spaces (the command runs via `bash -c`).
+- `check=<command>`: a sensor gate on any task. The command runs first;
+  exit 0 means all clear, skip quietly (logged SKIP-OK); nonzero means
+  fire, with the command's output tail saved to `check-findings/<id>.txt`
+  so the prompt can point its session at the findings.
+- `may-fire=<a,b>`: who may fire the task on demand. `agent-nexus fire
+  <id> --as <caller>` names the caller; an unlisted caller is REFUSED
+  (rc 4) and audited. The scheduler and the menu are always allowed.
+  Tokens are names, not secrets: this stops habit sprawl and tampered
+  scripts, not a local attacker.
+
+An `event` task combines with these: a detector script alerts you AND fires
+a review prompt into a session the moment something is wrong, not at the
+next timer. If the target is busy, the fire is QUEUED (a spool the ticker
+drains: retried every 15 minutes, dropped with a notification after 6h),
+never silently lost.
+
+The wizard walks the whole setup: prompt-or-script kind, target session
+(shown with its project), id, schedule, what to do, the optional check
+command and caller allowlist, and the target's automation settings (managed
 status, reset, memory, permission mode). `Edit a task` changes any of it
-later, except the id, which run history is keyed by. Removing a task offers
-to remove its now-jobless session too (keep is the default; the saved
-conversation is never deleted).
+later (including the opts), except the id, which run history is keyed by.
+Removing a task offers to remove its now-jobless session too (keep is the
+default; the saved conversation is never deleted).
+
+### 4.1b Watches (background sensors)
+
+`agent-nexus watches` (also under Tools and maintenance) is the standing
+sensor panel, riding the same 15-minute tick:
+
+- **disk-space**: alerts below a free-GB threshold. NOTIFY-ONLY by explicit
+  design: no agent is ever asked to "clean up" a disk.
+- **backup-freshness**: alerts when the hourly vault-backup log goes stale
+  (threshold in hours) or the Claude-config backup is overdue.
+- **git-dirty**: repos under your projects root that are BOTH dirty and
+  without a commit for N days (forgotten work, not in-progress work).
+  Default off.
+- **conflict-scan**: Dropbox "conflicted copy" files under the projects
+  root, last 30 days. The alert says reconcile, not delete: a conflict
+  file can hold real edits.
+
+Each has on/off + thresholds (stored in the config block of sessions.md);
+the two tree scans self-throttle to one pass per ~6 hours. The screen also
+lists the checks the tick always runs (sign-in expiry, macOS file-access
+probe, approval watch, Telegram denied-check, config backup, Context Watch)
+and a matrix of where each playbook pack is installed.
 
 After a reboot, run `agent-nexus restore` to bring your sessions back, or
 set `boot-restore: on` in Settings and the first tick after a boot does it

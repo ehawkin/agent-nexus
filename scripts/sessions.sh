@@ -492,6 +492,13 @@ parse_sessions_file() {
   CFG_CONTEXT_ACT=""
   CFG_CONTEXT_TELEGRAM=""
   CFG_CONTEXT_WINDOW=""
+  CFG_WATCH_DISK=""
+  CFG_WATCH_DISK_GB=""
+  CFG_WATCH_BACKUP=""
+  CFG_WATCH_BACKUP_H=""
+  CFG_WATCH_GITDIRTY=""
+  CFG_WATCH_GITDIRTY_DAYS=""
+  CFG_WATCH_CONFLICTS=""
   ACTIVE_NAMES=()
   ACTIVE_PATHS=()
   ACTIVE_IDS=()
@@ -564,6 +571,13 @@ parse_sessions_file() {
             context-act) CFG_CONTEXT_ACT="$value" ;;
             context-telegram) CFG_CONTEXT_TELEGRAM="$value" ;;
             context-window) CFG_CONTEXT_WINDOW="$value" ;;
+            watch-disk) CFG_WATCH_DISK="$value" ;;
+            watch-disk-min-gb) CFG_WATCH_DISK_GB="$value" ;;
+            watch-backup) CFG_WATCH_BACKUP="$value" ;;
+            watch-backup-max-h) CFG_WATCH_BACKUP_H="$value" ;;
+            watch-git-dirty) CFG_WATCH_GITDIRTY="$value" ;;
+            watch-git-dirty-days) CFG_WATCH_GITDIRTY_DAYS="$value" ;;
+            watch-conflicts) CFG_WATCH_CONFLICTS="$value" ;;
             digest-time) CFG_DIGEST_TIME="$value" ;;
             digest-weekly-day) CFG_DIGEST_WEEKLY_DAY="$value" ;;
             digest-dir) CFG_DIGEST_DIR="$value" ;;
@@ -916,6 +930,13 @@ context-notice: ${CFG_CONTEXT_NOTICE:-45}
 context-act: ${CFG_CONTEXT_ACT:-60}
 context-telegram: ${CFG_CONTEXT_TELEGRAM:-off}
 context-window: ${CFG_CONTEXT_WINDOW:-auto}
+watch-disk: ${CFG_WATCH_DISK:-on}
+watch-disk-min-gb: ${CFG_WATCH_DISK_GB:-10}
+watch-backup: ${CFG_WATCH_BACKUP:-on}
+watch-backup-max-h: ${CFG_WATCH_BACKUP_H:-3}
+watch-git-dirty: ${CFG_WATCH_GITDIRTY:-off}
+watch-git-dirty-days: ${CFG_WATCH_GITDIRTY_DAYS:-7}
+watch-conflicts: ${CFG_WATCH_CONFLICTS:-on}
 digest-time: ${CFG_DIGEST_TIME:-08:00}
 digest-weekly-day: ${CFG_DIGEST_WEEKLY_DAY:-Mon}
 digest-dir: ${CFG_DIGEST_DIR:-}
@@ -5307,7 +5328,7 @@ sched_normalize_time() {
 
 sched_parse_spec() {
   local spec="$1" t1 rest hh
-  SP_MODE="bad"; SP_HHMM=""; SP_WD=""
+  SP_MODE="bad"; SP_HHMM=""; SP_WD=""; SP_MM=""
   # Optional "weekly"/"every" prefix, any case.
   t1=$(printf '%s' "$spec" | awk '{print tolower($1)}')
   case "$t1" in weekly|every) spec=$(printf '%s' "$spec" | sed 's/^[^[:space:]]*[[:space:]]*//') ;; esac
@@ -5318,6 +5339,19 @@ sched_parse_spec() {
   case "$(printf '%s' "$t1" | tr '[:upper:]' '[:lower:]')" in
     daily)
       if hh=$(sched_normalize_time "$rest"); then SP_MODE="daily"; SP_HHMM="$hh"; fi
+      return ;;
+    event)
+      # No timer at all: the task fires only when a caller runs
+      # `fire <id> --as <caller>`. The tick's due loop skips these.
+      [ -z "$rest" ] && SP_MODE="event"
+      return ;;
+    hourly)
+      # "hourly" = every hour on the hour; "hourly :07" (or "hourly 07") =
+      # at :MM past each hour. SP_MM carries the minute.
+      local mm="${rest#:}"
+      [ -z "$mm" ] && mm="00"
+      case "$mm" in [0-9]) mm="0$mm" ;; esac
+      case "$mm" in [0-5][0-9]) SP_MODE="hourly"; SP_MM="$mm" ;; esac
       return ;;
   esac
   local wd; wd=$(sched_weekday_num "$t1")
@@ -5356,7 +5390,18 @@ sched_days_ahead_epoch() {
 # spec is unparseable. This is the whole basis of "is a fire owed?".
 occurrence_epoch() {
   sched_parse_spec "$1"; [ "$SP_MODE" = "bad" ] && { echo ""; return; }
+  # Event-driven tasks have no clock occurrence, ever: empty on purpose.
+  [ "$SP_MODE" = "event" ] && { echo ""; return; }
   local now; now=$(date +%s)
+  if [ "$SP_MODE" = "hourly" ]; then
+    # This hour's :MM if it's already past, else the previous hour's. Going
+    # through sched_days_ago_epoch (not epoch%3600 math) keeps it correct in
+    # non-whole-hour time zones.
+    local hhc c; hhc=$(date +%H)
+    c=$(sched_days_ago_epoch 0 "$hhc:$SP_MM"); [ -z "$c" ] && { echo ""; return; }
+    if [ "$c" -le "$now" ]; then echo "$c"; else echo $((c - 3600)); fi
+    return
+  fi
   if [ "$SP_MODE" = "daily" ]; then
     local c; c=$(sched_days_ago_epoch 0 "$SP_HHMM"); [ -z "$c" ] && { echo ""; return; }
     if [ "$c" -le "$now" ]; then echo "$c"; else sched_days_ago_epoch 1 "$SP_HHMM"; fi
@@ -5375,7 +5420,14 @@ occurrence_epoch() {
 # Next upcoming occurrence (epoch), for display only.
 sched_next_epoch() {
   sched_parse_spec "$1"; [ "$SP_MODE" = "bad" ] && { echo ""; return; }
+  [ "$SP_MODE" = "event" ] && { echo ""; return; }
   local now; now=$(date +%s)
+  if [ "$SP_MODE" = "hourly" ]; then
+    local hhc c; hhc=$(date +%H)
+    c=$(sched_days_ago_epoch 0 "$hhc:$SP_MM"); [ -z "$c" ] && { echo ""; return; }
+    if [ "$c" -gt "$now" ]; then echo "$c"; else echo $((c + 3600)); fi
+    return
+  fi
   if [ "$SP_MODE" = "daily" ]; then
     local c; c=$(sched_days_ahead_epoch 0 "$SP_HHMM"); [ -z "$c" ] && { echo ""; return; }
     if [ "$c" -gt "$now" ]; then echo "$c"; else sched_days_ahead_epoch 1 "$SP_HHMM"; fi
@@ -5389,6 +5441,13 @@ sched_next_epoch() {
     sched_days_ahead_epoch "$diff" "$SP_HHMM"
   fi
 }
+
+# sched_spec_valid <spec> — rc 0 for any schedule the system understands,
+# including 'event', which deliberately never has an occurrence_epoch. The
+# wizard/editor validate with THIS, not with occurrence_epoch non-emptiness.
+sched_spec_valid() { sched_parse_spec "$1"; [ "$SP_MODE" != "bad" ]; }
+# sched_is_event <spec> — rc 0 when the schedule is the 'event' token.
+sched_is_event() { sched_parse_spec "$1"; [ "$SP_MODE" = "event" ]; }
 
 sched_fmt_epoch() {
   [ -z "$1" ] || [ "$1" = "0" ] && { echo "never"; return; }
@@ -5405,22 +5464,39 @@ write_scheduled_tasks_template() {
 # Lines starting with '#' and blank lines are ignored.
 #
 # Tasks are grouped under a `### <target-session>` header — the tmux session
-# whose Claude the prompt is typed into. Each task line is PIPE-delimited:
+# whose Claude the prompt is typed into (use `### -` for script tasks, which
+# have no session). Each task line is PIPE-delimited:
 #
-#     <id> | <schedule> | <prompt> | <enabled>
+#     <id> | <schedule> | <prompt> | <enabled> [| <opts>]
 #
 #   id        short unique slug (e.g. vault-weekly)
 #   schedule  when to fire. Supported forms:
 #               <time>           (every day at that time)
 #               daily <time>
 #               <Dow> <time>     (weekly), e.g. "Sat 08:00" or "saturday 8pm"
+#               hourly [:MM]     (every hour, at :MM past it; default :00)
+#               event            (no timer — fires only when a caller runs
+#                                 `agent-nexus fire <id> --as <caller>`)
 #             <time> is 24h or am/pm: 18:00, 8:00, 8am, 8:30 PM, 8:30 p.m.
 #             Case does not matter anywhere; weekdays may be abbreviated.
 #   prompt    the exact single line typed into the session. Best practice:
 #             point it at an instruction file, e.g.
 #               Read ~/Documents/My Notes/weekly-review.md and follow it.
+#             For kind=script tasks this is the shell command the scheduler
+#             runs itself (best: one script path).
 #             (No literal '|' in the prompt — it's the field delimiter.)
 #   enabled   yes | no   (pause a task without deleting it)
+#   opts      OPTIONAL fifth field, `key=value;key=value` (no '|' or ';' in
+#             values — wrap complex commands in a script file). Keys:
+#               kind=script      the scheduler runs <prompt> as a command
+#                                itself; no session involved (session header -)
+#               check=<command>  run this first: exit 0 = skip quietly
+#                                (SKIP-OK), nonzero = fire, with the command's
+#                                output tail saved to check-findings/<id>.txt
+#                                in the scheduler state dir
+#               may-fire=<a,b>   caller tokens allowed to fire this task.
+#                                Tokens are names, not secrets (v1); the
+#                                scheduler and the menu are always allowed.
 #
 # Example (remove the leading '# ' to activate):
 # ### vault-weekly
@@ -5433,9 +5509,11 @@ write_scheduled_tasks_template() {
 TPL
 }
 
-# Parse scheduled-tasks.md into SCHED_IDS/SESSIONS/SCHEDULES/PROMPTS/ENABLED.
+# Parse scheduled-tasks.md into SCHED_IDS/SESSIONS/SCHEDULES/PROMPTS/ENABLED/
+# OPTS. The 5th field is optional; a 4-field row parses with empty opts and
+# writes back as 4 fields, so legacy files round-trip byte-identical.
 parse_scheduled_tasks() {
-  SCHED_IDS=(); SCHED_SESSIONS=(); SCHED_SCHEDULES=(); SCHED_PROMPTS=(); SCHED_ENABLED=()
+  SCHED_IDS=(); SCHED_SESSIONS=(); SCHED_SCHEDULES=(); SCHED_PROMPTS=(); SCHED_ENABLED=(); SCHED_OPTS=()
   [ -f "$SCHEDULED_TASKS_FILE" ] || return 0
   local cur="" line
   while IFS= read -r line || [ -n "$line" ]; do
@@ -5445,11 +5523,12 @@ parse_scheduled_tasks() {
       '#'*|'') continue;;
     esac
     case "$line" in *'|'*) ;; *) continue;; esac
-    local id sc pr en
+    local id sc pr en op
     id=$(awk -F'|' '{print $1}' <<<"$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     sc=$(awk -F'|' '{print $2}' <<<"$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     pr=$(awk -F'|' '{print $3}' <<<"$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     en=$(awk -F'|' '{print $4}' <<<"$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    op=$(awk -F'|' '{print $5}' <<<"$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     [ -z "$id" ] && continue
     # Harden the fields that get typed into a session and echoed into the
     # report-command line: the id must be a plain slug, and no field may carry
@@ -5457,10 +5536,40 @@ parse_scheduled_tasks() {
     case "$id" in *[!A-Za-z0-9._-]*) sched_log "SKIP task with invalid id '$id' (allowed: A-Za-z0-9._-)"; continue;; esac
     pr=$(printf '%s' "$pr" | tr -d '\000-\037')
     sc=$(printf '%s' "$sc" | tr -d '\000-\037')
+    op=$(printf '%s' "$op" | tr -d '\000-\037')
     [ -z "$en" ] && en="yes"
     SCHED_IDS+=("$id"); SCHED_SESSIONS+=("$cur"); SCHED_SCHEDULES+=("$sc")
-    SCHED_PROMPTS+=("$pr"); SCHED_ENABLED+=("$en")
+    SCHED_PROMPTS+=("$pr"); SCHED_ENABLED+=("$en"); SCHED_OPTS+=("$op")
   done < "$SCHEDULED_TASKS_FILE"
+}
+
+# sched_opt <idx> <key> — the value of <key> from a task's opts field
+# (key=value;key=value). Echoes the value; rc 1 when absent. Values keep
+# everything after the FIRST '=', so a check= command may itself contain '='.
+sched_opt() {
+  local o="${SCHED_OPTS[$1]:-}" k="$2" part rest
+  [ -z "$o" ] && return 1
+  rest="$o;"
+  while [ -n "$rest" ]; do
+    part="${rest%%;*}"; rest="${rest#*;}"
+    case "$part" in "$k="*) printf '%s' "${part#*=}"; return 0;; esac
+  done
+  return 1
+}
+
+# fire_caller_allowed <caller> <comma-list> — rc 0 when <caller> may fire a
+# task carrying that may-fire list. The scheduler (timer/tick fires) and the
+# interactive menu (a human at the keyboard) are always allowed: may-fire
+# exists to stop script/habit sprawl, not the owner or the task's own clock.
+fire_caller_allowed() {
+  case "$1" in scheduler|menu) return 0;; esac
+  local rest="$2," part
+  while [ -n "$rest" ]; do
+    part="${rest%%,*}"; rest="${rest#*,}"
+    part=$(printf '%s' "$part" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    [ -n "$part" ] && [ "$part" = "$1" ] && return 0
+  done
+  return 1
 }
 
 # Rewrite scheduled-tasks.md from the SCHED_* arrays (atomic temp+mv).
@@ -5486,9 +5595,14 @@ write_scheduled_tasks() {
       seen="$seen $s"
       echo "### $s"
       for j in "${!SCHED_IDS[@]}"; do
-        [ "${SCHED_SESSIONS[$j]}" = "$s" ] && \
+        [ "${SCHED_SESSIONS[$j]}" = "$s" ] || continue
+        if [ -n "${SCHED_OPTS[$j]:-}" ]; then
+          printf '%s | %s | %s | %s | %s\n' \
+            "${SCHED_IDS[$j]}" "${SCHED_SCHEDULES[$j]}" "${SCHED_PROMPTS[$j]}" "${SCHED_ENABLED[$j]}" "${SCHED_OPTS[$j]}"
+        else
           printf '%s | %s | %s | %s\n' \
             "${SCHED_IDS[$j]}" "${SCHED_SCHEDULES[$j]}" "${SCHED_PROMPTS[$j]}" "${SCHED_ENABLED[$j]}"
+        fi
       done
       echo ""
     done
@@ -6538,31 +6652,104 @@ state_rw_instruction() {
 #   never reacted — do NOT mark handled; suspect counter advanced)
 # Pass "probe" as $2 to enable the post-delivery liveness probe (tick does;
 # interactive run-now doesn't, to avoid a 20s wait while the user watches).
+# fire_stamp_caller <id> <caller> — record WHO last fired a task (shown by the
+# schedule list for event-driven tasks; audit breadcrumb for the rest).
+fire_stamp_caller() {
+  mkdir -p "$SCHEDULE_STATE_DIR/last-fired-by" 2>/dev/null
+  printf '%s\n' "$2" > "$SCHEDULE_STATE_DIR/last-fired-by/$1"
+}
+
+# fire_spool_maybe <id> <schedule> <caller> — busy-retry for EVENT tasks only.
+# An ad-hoc fire used to be one attempt: busy meant silently dropped (the 12h
+# catch-up only ever covered missed SCHEDULED occurrences). Now a busy event
+# fire queues here and cmd_tick drains the spool: re-fire until delivered,
+# drop + notify past 6h. Timer tasks keep their catch-up semantics untouched.
+fire_spool_maybe() {
+  [ "${FIRE_FROM_SPOOL:-}" = "1" ] && return 0   # a drain retry must not re-queue itself
+  sched_is_event "$2" || return 0
+  mkdir -p "$SCHEDULE_STATE_DIR/fire-spool" 2>/dev/null
+  printf '%s\n' "$3" > "$SCHEDULE_STATE_DIR/fire-spool/$1.$(date +%s)"
+  FIRE_SPOOLED=1
+  sched_log "SPOOLED task=$1 caller=$3 (target busy; the tick retries until delivered, 6h cap)"
+}
+
+# Return codes: 0 delivered/ran, 1 target unavailable, 2 busy (retry), 3 no
+# such task, 4 REFUSED by may-fire (also: pane unresponsive on the probe path;
+# the two can't meet - auth rc4 never reaches cmd_tick because the scheduler
+# is always an allowed caller, and the probe rc4 never reaches the CLI because
+# `fire` doesn't probe), 5 check passed = nothing to deliver (SKIP-OK).
 fire_task() {
   local want="$1" do_probe="${2:-}" i idx=-1
   parse_scheduled_tasks
   for i in "${!SCHED_IDS[@]}"; do [ "${SCHED_IDS[$i]}" = "$want" ] && { idx=$i; break; }; done
   [ "$idx" -lt 0 ] && return 3
   local sess="${SCHED_SESSIONS[$idx]}" prompt="${SCHED_PROMPTS[$idx]}"
+  local tsched="${SCHED_SCHEDULES[$idx]}" caller="${FIRE_CALLER:-cli}"
   local sock; sock=$(sched_tmux_socket)
 
   migrate_sched_state
   FIRE_RETRY_KIND=""   # set on every rc-2 path so cmd_tick can log WHY
-  target_lock_acquire "$sess" || { sched_log "fire $want: target '$sess' locked by another actor; retry"; FIRE_RETRY_KIND="lock"; return 2; }
+  FIRE_SPOOLED=""      # set when a busy event fire was queued for retry
+  FIRE_SCRIPT_RC=""    # a script task's own exit code (fire rc 0 means "it ran")
+  # may-fire authorization: enforced only when the task declares a list.
+  # Tokens are names, not secrets (v1): the threat is habit sprawl and tampered
+  # scripts firing whatever they like, not a local attacker with shell access.
+  local mayfire; mayfire=$(sched_opt "$idx" "may-fire")
+  if [ -n "$mayfire" ] && ! fire_caller_allowed "$caller" "$mayfire"; then
+    sched_log "REFUSED fire task=$want caller=$caller (may-fire: $mayfire)"
+    return 4
+  fi
+  # check gate: a sensor command that decides whether there is anything to do.
+  # Exit 0 = all clear, skip quietly; nonzero = fire, with the sensor's output
+  # tail saved where the task's prompt can point the session at it.
+  local chk; chk=$(sched_opt "$idx" "check")
+  if [ -n "$chk" ]; then
+    local cout crc
+    cout=$(bash -c "$chk" 2>&1); crc=$?
+    if [ "$crc" -eq 0 ]; then
+      sched_log "SKIP-OK task=$want check passed (nothing to deliver)"
+      return 5
+    fi
+    mkdir -p "$SCHEDULE_STATE_DIR/check-findings" 2>/dev/null
+    printf '%s\n' "$cout" | tail -10 > "$SCHEDULE_STATE_DIR/check-findings/$want.txt"
+    sched_log "CHECK task=$want rc=$crc findings saved: check-findings/$want.txt"
+  fi
+  # kind=script: the scheduler runs the command itself. No session, no tmux,
+  # no heal/busy/typing - this branch is what lets plain launchd jobs (like
+  # the vault hourly backup) live inside Nexus instead of alongside it.
+  if [ "$(sched_opt "$idx" "kind")" = "script" ]; then
+    local sout srcc
+    sout=$(bash -c "$prompt" 2>&1); srcc=$?
+    FIRE_SCRIPT_RC="$srcc"   # callers report failure honestly; fire rc stays 0 (it ran)
+    mkdir -p "$SCHEDULE_STATE_DIR/script-runs" 2>/dev/null
+    printf '%s\n' "$sout" | tail -20 > "$SCHEDULE_STATE_DIR/script-runs/$want.last"
+    fire_stamp_caller "$want" "$caller"
+    sched_is_event "$tsched" && sched_set_last_fired "$want" "$(date +%s)"
+    if [ "$srcc" -eq 0 ]; then
+      sched_log "SCRIPT task=$want rc=0 caller=$caller"
+      runs_log_line "RUN    task=$want session=- (script ok)"
+    else
+      sched_log "SCRIPT task=$want FAILED rc=$srcc caller=$caller (tail saved: script-runs/$want.last)"
+      runs_log_line "RUN-FAILED task=$want session=- (script rc=$srcc)"
+      notify "script-fail-$want" "Agent Nexus: scheduled script task '$want' failed (rc=$srcc). Output tail: $SCHEDULE_STATE_DIR/script-runs/$want.last"
+    fi
+    return 0
+  fi
+  target_lock_acquire "$sess" || { sched_log "fire $want: target '$sess' locked by another actor; retry"; FIRE_RETRY_KIND="lock"; fire_spool_maybe "$want" "$tsched" "$caller"; return 2; }
   local locked="$sess"   # the name we hold the lock on; release THIS even if $sess is redirected
   local rc=0
   # Self-heal (Phase 0): recreate dead tmux/claude before delivering.
   ensure_target_alive "$sess"; local hrc=$?
   case "$hrc" in
     1) target_lock_release "$locked"; return 1 ;;
-    2) target_lock_release "$locked"; FIRE_RETRY_KIND="grace-park"; return 2 ;;
+    2) target_lock_release "$locked"; FIRE_RETRY_KIND="grace-park"; fire_spool_maybe "$want" "$tsched" "$caller"; return 2 ;;
     3) sess="$ETA_DELIVER_TO" ;;   # redirected; never arm suspect/kill on this path
   esac
   # A fresh session can sit on claude's folder-trust dialog (blocks delivery,
   # reads busy:dialog). We launched it in a registry dir on purpose: accept it.
   dismiss_trust_dialog "$sess" "$sock" && sleep 1
   if sched_session_busy "$sess" "$sock"; then
-    target_lock_release "$locked"; FIRE_RETRY_KIND="busy:${BUSY_REASON:-unknown}"; return 2
+    target_lock_release "$locked"; FIRE_RETRY_KIND="busy:${BUSY_REASON:-unknown}"; fire_spool_maybe "$want" "$tsched" "$caller"; return 2
   fi
   # Managed-session policies for this target (PKG_* are empty if not managed).
   local is_managed=""; pkg_lookup_by_session "$sess" && is_managed=1
@@ -6624,6 +6811,14 @@ fire_task() {
   sleep 1
   tmux -S "$sock" send-keys -t "$sess" Enter
   runs_log_line "RUN    task=$want session=$sess (prompt delivered)"
+  fire_stamp_caller "$want" "$caller"
+  if sched_is_event "$tsched"; then
+    # Event tasks have no clock occurrence, so last-fired doubles as their
+    # whole history: stamp delivery time (harmless to dedup - nothing reads
+    # occ<=last for event tasks) and audit every accepted caller.
+    sched_set_last_fired "$want" "$(date +%s)"
+    sched_log "FIRE task=$want caller=$caller delivered (event-driven)"
+  fi
   # After a /clear, the run prompt is the first message of a NEW conversation.
   # Capture its fresh id into sessions.md so a later heal resumes the RIGHT one.
   if [ -n "$reset_did_clear" ] && [ -n "$reset_dir" ]; then
@@ -6665,6 +6860,41 @@ fire_task() {
   fi
   target_lock_release "$locked"
   return "$rc"
+}
+
+# fire_spool_drain <now> — deliver queued event fires (see fire_spool_maybe).
+# Keeps a file while its target is still busy/down; removes it on delivery,
+# on a 6h timeout (with a notify - "queued" must never mean "silently gone"),
+# or when the task disappeared / no longer allows the caller.
+fire_spool_drain() {
+  local now="$1" d="$SCHEDULE_STATE_DIR/fire-spool" f base id ep caller rc seen=""
+  [ -d "$d" ] || return 0
+  FIRE_FROM_SPOOL=1
+  for f in "$d"/*; do
+    [ -f "$f" ] || continue
+    base="${f##*/}"; ep="${base##*.}"; id="${base%.*}"
+    case "$ep" in ''|*[!0-9]*) rm -f "$f"; continue;; esac
+    # One delivery per task per drain: two callers queueing the same task get
+    # ONE prompt (the content is identical), not a double-typed session.
+    case " $seen " in *" $id "*)
+      rm -f "$f"; sched_log "SPOOL dedup task=$id (an earlier queued fire already delivered)"; continue;;
+    esac
+    caller=$(head -1 "$f" 2>/dev/null); caller="${caller:-cli}"
+    if [ $((now - ep)) -gt "${FIRE_SPOOL_MAX_AGE:-21600}" ]; then
+      rm -f "$f"
+      sched_log "SPOOL DROP task=$id caller=$caller queued $(sched_fmt_epoch "$ep") never delivered (past the 6h cap)"
+      notify "fire-spool-$id" "Agent Nexus: a queued fire of '$id' (from $caller) was DROPPED after 6h - its target session never freed up. Fire it again by hand when the target is idle."
+      continue
+    fi
+    FIRE_CALLER="$caller"
+    fire_task "$id"; rc=$?
+    case "$rc" in
+      0|5) rm -f "$f"; seen="$seen $id"; sched_log "SPOOL delivered task=$id caller=$caller (rc=$rc)";;
+      1|2) sched_log "SPOOL waiting task=$id (rc=$rc); retrying next tick";;
+      *)   rm -f "$f"; sched_log "SPOOL dropped task=$id caller=$caller (rc=$rc: task gone or caller refused)";;
+    esac
+  done
+  FIRE_CALLER=""; FIRE_FROM_SPOOL=""
 }
 
 # cmd_tick — the launchd entry point. Headless, output-clean; logs to tick.log.
@@ -7561,6 +7791,9 @@ cmd_tick() {
   # Context Watch sweep: refresh every Active session's context stamp +
   # history from its own transcript (reads only; nothing typed anywhere).
   ctx_watch_tick
+  # Watches: generic sensors (disk NOTIFY-ONLY, backup freshness, git-dirty,
+  # Dropbox-conflict scan) on the same beat; the tree scans self-throttle ~6h.
+  watches_tick
   # Approval dialogs (Chrome site gates and friends) parked in tracked panes:
   # push the question to the phone. The daemon also runs this every poll loop;
   # here is the fallback cadence for installs without the daemon.
@@ -7577,9 +7810,11 @@ cmd_tick() {
   keepalive_run
   parse_scheduled_tasks
   local i fired=0
+  FIRE_CALLER="scheduler"
   for i in "${!SCHED_IDS[@]}"; do
     local id="${SCHED_IDS[$i]}" en="${SCHED_ENABLED[$i]}" sc="${SCHED_SCHEDULES[$i]}"
     case "$en" in y|Y|yes|YES|Yes|true|on|ON) ;; *) continue;; esac
+    sched_is_event "$sc" && continue   # event-driven: fired by callers, never by the clock
     local occ; occ=$(occurrence_epoch "$sc")
     if [ -z "$occ" ]; then sched_log "ERROR task=$id unparseable schedule '$sc'"; continue; fi
     local last; last=$(sched_last_fired "$id")
@@ -7641,9 +7876,18 @@ cmd_tick() {
           sched_log "RETRY task=$id delivered but pane unresponsive (probe, $pfn/${PROBE_FAIL_MAX:-3}); NOT marked handled"
         fi
         ;;
+      5)
+        # The task's check command came back clean: the occurrence is handled,
+        # nothing was delivered, and that is the designed quiet outcome.
+        sched_set_last_fired "$id" "$occ"
+        sched_log "SKIP-OK task=$id occurrence $(sched_fmt_epoch "$occ") (check passed; nothing to deliver)"
+        rm -f "$bp"
+        ;;
       *) sched_log "ERROR task=$id fire rc=$rc";;
     esac
   done
+  # Queued event fires (busy at fire time) get their retry on the same beat.
+  fire_spool_drain "$now"
   # Prune busy-park and probe-fail counters whose occurrence is long gone
   # (fired/closed paths remove their own; this catches tasks deleted mid-park).
   find "$SCHEDULE_STATE_DIR/busy-parks" -type f -mtime +7 -delete 2>/dev/null
@@ -7786,23 +8030,30 @@ sched_print_list() {
   box_open "KEY"
   box_line "[yes/no]"  'is the task enabled'
   box_line "id → sess" 'the task and the session its prompt is typed into'
-  box_line "sched"     'when it repeats'
+  box_line "sched"     'when it repeats ("event" = fired by callers, no timer)'
   box_line "next"      'next planned fire'
-  box_line "last"      'when it last actually ran'
+  box_line "last"      'when it last actually ran (event tasks: and by whom)'
   box_close
   local i
   for i in "${!SCHED_IDS[@]}"; do
     local id="${SCHED_IDS[$i]}" s="${SCHED_SESSIONS[$i]}" sc="${SCHED_SCHEDULES[$i]}" en="${SCHED_ENABLED[$i]}"
-    local nxt lf enc
-    nxt=$(sched_fmt_epoch "$(sched_next_epoch "$sc")")
+    local nxt lf enc lfb=""
     lf=$(sched_fmt_epoch "$(sched_last_fired "$id")")
+    if sched_is_event "$sc"; then
+      nxt="(when fired)"
+      lfb=$(head -1 "$SCHEDULE_STATE_DIR/last-fired-by/$id" 2>/dev/null)
+    else
+      nxt=$(sched_fmt_epoch "$(sched_next_epoch "$sc")")
+    fi
+    [ "$(sched_opt "$i" kind)" = "script" ] && s="(script)"
     case "$en" in yes) enc="${C_OK}yes${C_RESET}" ;; *) enc="${C_DIM}no ${C_RESET}" ;; esac
     # Two lines per task: the one-line version ran past every terminal
     # (QA 2026-07-26). The when-facts wrap onto a dim second line indented to
     # the column just past the [yes] badge.
     printf "  %2d. [%s] %-16s → %-20s  sched: %s\n" \
       "$((i+1))" "$enc" "$id" "$s" "$sc"
-    printf '            %s\n' "$(cdim "next: $nxt   last-fired: $lf")"
+    printf '            %s\n' "$(cdim "next: $nxt   last-fired: $lf${lfb:+ (by $lfb)}")"
+    [ -n "${SCHED_OPTS[$i]:-}" ] && printf '            %s\n' "$(cdim "opts: ${SCHED_OPTS[$i]}")"
   done
 }
 
@@ -7980,8 +8231,23 @@ sched_ask_prompt() {
 }
 
 sched_add_task() {
-  local target="${1:-}" tdir=""
+  # NB: 'topts' (task options string), not 'opts' - the target picker below
+  # already uses an array named opts.
+  local target="${1:-}" tdir="" kind="prompt" topts=""
   echo ""
+  if [ -z "$target" ]; then
+    # 0) task kind: session prompt (the normal thing) or a scheduler-run script
+    local kpick
+    kpick=$(pick_option "What should this task do when it's due?" \
+      "Type a prompt into a Claude session (the normal kind)" \
+      "Run a script itself — no session involved (backups, sensors)" \
+      "[ cancel ]")
+    case "$kpick" in
+      "Run a script"*) kind="script"; target="-" ;;
+      "Type a prompt"*) ;;
+      *) echo "Cancelled."; return 0 ;;
+    esac
+  fi
   if [ -z "$target" ]; then
     # 1) target session — with its project, so near-identical names read apart
     sched_target_labels
@@ -7998,6 +8264,8 @@ sched_add_task() {
       done
       [ -z "$target" ] && { echo "Cancelled."; return 0; }
     fi
+  elif [ "$kind" = "script" ]; then
+    echo "A script task: the scheduler runs the command itself (no session)."
   else
     echo "Scheduling a task into: $target"
   fi
@@ -8031,33 +8299,80 @@ sched_add_task() {
   # and id the user already entered.
   local sc
   while :; do
-    read -r -p "Schedule (e.g. 'Sat 08:00', 'daily 7:30 pm', '8am'; blank cancels): " sc
+    read -r -p "Schedule ('Sat 08:00', 'daily 7:30 pm', '8am', 'hourly :07', or 'event'; blank cancels): " sc
     [ -z "$sc" ] && { echo "Cancelled."; return 0; }
-    [ -n "$(occurrence_epoch "$sc")" ] && break
+    sched_spec_valid "$sc" && break
     echo "  Couldn't parse '$sc'. A time alone means daily ('18:00', '8am', '7:30 pm');"
-    echo "  'daily <time>' works too; a weekday makes it weekly ('Sat 08:00', 'saturday 8pm')."
+    echo "  'daily <time>' works too; a weekday makes it weekly ('Sat 08:00', 'saturday 8pm');"
+    echo "  'hourly' or 'hourly :07' repeats every hour; 'event' means no timer at all -"
+    echo "  the task fires only when something calls: $(tool_cmd) fire <id> --as <caller>."
   done
 
-  # 4) what the task should do (instruction file vs typed prompt, as a choice)
-  sched_ask_prompt "$target" "$tdir" || return 0
-  local prompt="$SAP_PROMPT"
+  # 4) what the task should do (instruction file vs typed prompt, as a choice;
+  # for a script task, the shell command the scheduler will run itself)
+  local prompt
+  if [ "$kind" = "script" ]; then
+    echo "The command runs via bash -c. QUOTE a path containing spaces:"
+    echo "  \"/Users/you/My Projects/backup.sh\""
+    read -r -p "Command to run (best: one script path): " prompt
+    [ -z "$prompt" ] && { echo "Cancelled (empty command)."; return 0; }
+    case "$prompt" in *'|'*) echo "Cancelled: '|' can't be stored (field delimiter). Wrap the command in a script file."; return 0;; esac
+    topts="kind=script"
+  else
+    sched_ask_prompt "$target" "$tdir" || return 0
+    prompt="$SAP_PROMPT"
+    # Optional check gate: a sensor command that decides whether to fire.
+    local chk
+    read -r -p "Optional check command - fires ONLY when it exits nonzero (blank = always fire): " chk
+    if [ -n "$chk" ]; then
+      case "$chk" in
+        *'|'*|*';'*) echo "  Skipped: '|' and ';' can't be stored in options. Wrap the command in a script file and name that." ;;
+        *) topts="check=$chk"
+           echo "  Check armed. Its output tail lands in: $SCHEDULE_STATE_DIR/check-findings/$id.txt"
+           echo "  (worth naming in the prompt so the session reads the findings)." ;;
+      esac
+    fi
+  fi
+  # Event tasks: who may fire them (names, not secrets; audited either way).
+  if sched_is_event "$sc"; then
+    local mf
+    read -r -p "Callers allowed to fire this, comma-separated tokens (blank = any caller, audited): " mf
+    if [ -n "$mf" ]; then
+      case "$mf" in
+        *'|'*|*';'*) echo "  Skipped: tokens are plain names (letters/digits/dashes), no '|' or ';'." ;;
+        *) topts="${topts:+$topts;}may-fire=$mf" ;;
+      esac
+    fi
+  fi
 
   # 5) commit
   SCHED_IDS+=("$id"); SCHED_SESSIONS+=("$target"); SCHED_SCHEDULES+=("$sc")
-  SCHED_PROMPTS+=("$prompt"); SCHED_ENABLED+=("yes")
+  SCHED_PROMPTS+=("$prompt"); SCHED_ENABLED+=("yes"); SCHED_OPTS+=("$topts")
   write_scheduled_tasks
   # A brand-new task must wait for its NEXT scheduled time. Without this, an
   # occurrence inside the 12h catch-up window (e.g. an 08:00 task created at
   # 09:00) counts as "missed" and fires within 15 minutes of creation, which
   # nobody creating a task expects (QA 2026-07-27). Stamping the most recent
   # past occurrence as handled closes the window that existed before the task.
+  # (Event tasks have no occurrence; the guard skips them.)
   local _occ; _occ=$(occurrence_epoch "$sc")
   [ -n "$_occ" ] && sched_set_last_fired "$id" "$_occ"
-  action_log "scheduled task added: $id -> $target ($sc)"
+  action_log "scheduled task added: $id -> $target ($sc)${topts:+ [$topts]}"
   echo ""
-  echo "Added task '$id' → session '$target', schedule '$sc'."
-  echo "  Prompt: $prompt"
-  echo "  Next run: $(sched_fmt_epoch "$(sched_next_epoch "$sc")")"
+  if [ "$kind" = "script" ]; then
+    echo "Added script task '$id', schedule '$sc'."
+    echo "  Command: $prompt"
+  else
+    echo "Added task '$id' → session '$target', schedule '$sc'."
+    echo "  Prompt: $prompt"
+  fi
+  [ -n "$topts" ] && echo "  Options: $topts"
+  if sched_is_event "$sc"; then
+    echo "  Fires only on demand:  $(tool_cmd) fire $id --as <caller>"
+    echo "  (busy target = queued and retried by the tick for up to 6h)"
+  else
+    echo "  Next run: $(sched_fmt_epoch "$(sched_next_epoch "$sc")")"
+  fi
   if ! launchctl list 2>/dev/null | grep -q "$SCHED_PLIST_LABEL"; then
     echo "  ! The ticker (the background job that fires tasks every 15 min) is NOT"
     echo "    installed - this task will never fire until you run 'Install / reload"
@@ -8065,8 +8380,11 @@ sched_add_task() {
   fi
   # 6) the target's automation settings (manage it, reset/memory/permission),
   # asked HERE so the wizard covers the whole setup (QA 2026-07-26).
-  echo ""
-  sched_offer_automation "$target"
+  # Script tasks have no target session, so there is nothing to manage.
+  if [ "$kind" != "script" ]; then
+    echo ""
+    sched_offer_automation "$target"
+  fi
 }
 
 # NOTE (all three below + sched_edit_task): sched_pick_task_index runs in a
@@ -8093,14 +8411,14 @@ sched_remove_task() {
   parse_scheduled_tasks
   [ "$idx" -lt "${#SCHED_IDS[@]}" ] 2>/dev/null || return 0
   local gone="${SCHED_IDS[$idx]}" tsess="${SCHED_SESSIONS[$idx]}"
-  local nI=() nS=() nSc=() nP=() nE=() i
+  local nI=() nS=() nSc=() nP=() nE=() nO=() i
   for i in "${!SCHED_IDS[@]}"; do
     [ "$i" -eq "$idx" ] && continue
     nI+=("${SCHED_IDS[$i]}"); nS+=("${SCHED_SESSIONS[$i]}"); nSc+=("${SCHED_SCHEDULES[$i]}")
-    nP+=("${SCHED_PROMPTS[$i]}"); nE+=("${SCHED_ENABLED[$i]}")
+    nP+=("${SCHED_PROMPTS[$i]}"); nE+=("${SCHED_ENABLED[$i]}"); nO+=("${SCHED_OPTS[$i]:-}")
   done
   SCHED_IDS=("${nI[@]}"); SCHED_SESSIONS=("${nS[@]}"); SCHED_SCHEDULES=("${nSc[@]}")
-  SCHED_PROMPTS=("${nP[@]}"); SCHED_ENABLED=("${nE[@]}")
+  SCHED_PROMPTS=("${nP[@]}"); SCHED_ENABLED=("${nE[@]}"); SCHED_OPTS=("${nO[@]}")
   write_scheduled_tasks
   action_log "scheduled task removed: $gone"
   echo "Removed task '$gone'."
@@ -8149,13 +8467,28 @@ sched_run_now() {
   parse_scheduled_tasks
   [ "$idx" -lt "${#SCHED_IDS[@]}" ] 2>/dev/null || return 0
   local id="${SCHED_IDS[$idx]}"
-  echo "Firing '$id' now (this does NOT change its schedule/last-fired state)..."
+  echo "Firing '$id' now (a timer task's schedule/last-fired state is not changed)..."
+  FIRE_CALLER="menu"
   fire_task "$id"; local rc=$?
+  FIRE_CALLER=""
   case "$rc" in
-    0) echo "  Fired — prompt typed into '${SCHED_SESSIONS[$idx]}'.";;
+    0) if [ "$(sched_opt "$idx" kind)" = "script" ]; then
+         if [ -n "${FIRE_SCRIPT_RC:-}" ] && [ "$FIRE_SCRIPT_RC" != "0" ]; then
+           echo "  Ran but the script FAILED (rc=$FIRE_SCRIPT_RC) — tail: $SCHEDULE_STATE_DIR/script-runs/$id.last"
+         else
+           echo "  Ran — output tail: $SCHEDULE_STATE_DIR/script-runs/$id.last"
+         fi
+       else
+         echo "  Fired — prompt typed into '${SCHED_SESSIONS[$idx]}'."
+       fi;;
     1) echo "  Target session '${SCHED_SESSIONS[$idx]}' isn't running. Start/restore it first.";;
-    2) echo "  Target looked busy (pane changing). Try again when it's idle.";;
+    2) if [ -n "${FIRE_SPOOLED:-}" ]; then
+         echo "  Target is busy — QUEUED. The tick retries until delivered (6h cap)."
+       else
+         echo "  Target looked busy (pane changing). Try again when it's idle."
+       fi;;
     3) echo "  Task not found.";;
+    5) echo "  Check passed — nothing to deliver (that quiet skip is the design).";;
   esac
 }
 
@@ -8225,28 +8558,57 @@ sched_edit_task() {
       "Schedule   (now: ${SCHED_SCHEDULES[$idx]})" \
       "What it does   (now: $(printf '%.60s' "${SCHED_PROMPTS[$idx]}"))" \
       "Target session   (now: ${SCHED_SESSIONS[$idx]})" \
+      "Options   (now: ${SCHED_OPTS[$idx]:-none}; kind=script / check= / may-fire=)" \
       "Automation settings of '${SCHED_SESSIONS[$idx]}'   (reset / memory / permission / keep-alive)" \
       "[ done ]")
     case "$what" in
       "Schedule"*)
         local sc
         while :; do
-          read -r -p "New schedule (e.g. 'Sat 08:00', 'daily 7:30 pm', '8am'; blank keeps '${SCHED_SCHEDULES[$idx]}'): " sc
+          read -r -p "New schedule ('Sat 08:00', 'daily 7:30 pm', 'hourly :07', 'event'; blank keeps '${SCHED_SCHEDULES[$idx]}'): " sc
           [ -z "$sc" ] && break
-          if [ -n "$(occurrence_epoch "$sc")" ]; then
+          if sched_spec_valid "$sc"; then
             SCHED_SCHEDULES[$idx]="$sc"
             write_scheduled_tasks
             action_log "scheduled task edited: $id schedule -> $sc"
             # Same no-retroactive-catch-up rule as creation: a schedule set to
             # a time inside the last 12h must not fire NOW; only its next
-            # occurrence counts.
-            sched_set_last_fired "$id" "$(occurrence_epoch "$sc")"
-            echo "  Saved. Next run: $(sched_fmt_epoch "$(sched_next_epoch "$sc")")"
+            # occurrence counts. (Event schedules have no occurrence to stamp.)
+            local _eocc; _eocc=$(occurrence_epoch "$sc")
+            [ -n "$_eocc" ] && sched_set_last_fired "$id" "$_eocc"
+            if sched_is_event "$sc"; then
+              echo "  Saved. Fires only on demand: $(tool_cmd) fire $id --as <caller>"
+            else
+              echo "  Saved. Next run: $(sched_fmt_epoch "$(sched_next_epoch "$sc")")"
+            fi
             break
           fi
           echo "  Couldn't parse '$sc'. A time alone means daily ('18:00', '8am', '7:30 pm');"
-          echo "  'daily <time>' works too; a weekday makes it weekly ('Sat 08:00', 'saturday 8pm')."
+          echo "  'daily <time>' works too; a weekday makes it weekly ('Sat 08:00', 'saturday 8pm');"
+          echo "  'hourly [:MM]' repeats every hour; 'event' fires only on demand."
         done ;;
+      "Options"*)
+        echo "  Options are 'key=value;key=value'. Keys: kind=script (scheduler runs the"
+        echo "  command itself), check=<command> (fire only when it exits nonzero),"
+        echo "  may-fire=<a,b> (callers allowed to fire; scheduler+menu always may)."
+        local no
+        read -r -p "New options (blank keeps '${SCHED_OPTS[$idx]:-none}'; 'none' clears): " no
+        if [ -z "$no" ]; then
+          :
+        elif [ "$no" = "none" ]; then
+          SCHED_OPTS[$idx]=""
+          write_scheduled_tasks
+          action_log "scheduled task edited: $id options cleared"
+          echo "  Saved (no options)."
+        else
+          case "$no" in
+            *'|'*) echo "  Not saved: '|' is the field delimiter and can't appear in options." ;;
+            *) SCHED_OPTS[$idx]="$no"
+               write_scheduled_tasks
+               action_log "scheduled task edited: $id options -> $no"
+               echo "  Saved." ;;
+          esac
+        fi ;;
       "What it does"*)
         if sched_ask_prompt "${SCHED_SESSIONS[$idx]}"; then
           SCHED_PROMPTS[$idx]="$SAP_PROMPT"
@@ -10351,6 +10713,254 @@ config_backup_tick() {
   config_backup_run >/dev/null 2>&1 \
     && sched_log "CONFIG-BACKUP ${CFG_CONFIG_BACKUP:-} -> $(config_backup_dir)" \
     || sched_log "CONFIG-BACKUP ${CFG_CONFIG_BACKUP:-} FAILED (source or destination missing)"
+}
+
+# =============================================================================
+# Watches — generic background sensors riding the 15-minute tick.
+# Built-ins: disk-space (NOTIFY-ONLY by explicit design: an agent "clearing
+# space" is scarier than a full disk), backup-freshness (notify-only),
+# git-dirty-too-long and Dropbox-conflict scan (notify; agent investigation
+# only when YOU ask a session). Project-specific sensors (like a vault
+# integrity check) are NOT built-ins - they are check:-gated scheduled tasks.
+# The Watches screen also lists the internal tick checks (login, TCC,
+# permwatch, denied-check, config-backup, Context Watch), which used to ride
+# the beat with no UI at all, and the Playbooks installed-where matrix.
+# =============================================================================
+
+# watch_on <disk|backup|git-dirty|conflicts> — is that watch enabled?
+watch_on() {
+  local v
+  case "$1" in
+    disk)      v="${CFG_WATCH_DISK:-on}" ;;
+    backup)    v="${CFG_WATCH_BACKUP:-on}" ;;
+    git-dirty) v="${CFG_WATCH_GITDIRTY:-off}" ;;
+    conflicts) v="${CFG_WATCH_CONFLICTS:-on}" ;;
+    *) return 1 ;;
+  esac
+  case "$v" in off|no|OFF|NO) return 1 ;; *) return 0 ;; esac
+}
+
+watch_result_stamp() {   # <name> <text>
+  mkdir -p "$SCHEDULE_STATE_DIR/watch-results" 2>/dev/null
+  printf '%s|%s\n' "$(date +%s)" "$2" > "$SCHEDULE_STATE_DIR/watch-results/$1"
+}
+watch_result_read() {   # <name> — "text — when" (or a not-yet-run marker)
+  local f="$SCHEDULE_STATE_DIR/watch-results/$1" line ep tx
+  [ -f "$f" ] || { printf '(not yet run)'; return 0; }
+  line=$(head -1 "$f" 2>/dev/null); ep="${line%%|*}"; tx="${line#*|}"
+  printf '%s — %s' "$tx" "$(sched_fmt_epoch "$ep")"
+}
+
+# Free gigabytes on / (df -g). Seam: WATCH_DISK_FREE_OVERRIDE.
+watch_disk_run() {
+  local free min
+  free="${WATCH_DISK_FREE_OVERRIDE:-$(df -g / 2>/dev/null | awk 'NR==2 {print $4}')}"
+  min="${CFG_WATCH_DISK_GB:-10}"
+  case "$free" in ''|*[!0-9]*) watch_result_stamp disk "unreadable df output"; return 0 ;; esac
+  if [ "$free" -lt "$min" ]; then
+    watch_result_stamp disk "LOW: ${free} GB free (threshold ${min} GB)"
+    notify "watch-disk" "Agent Nexus watch: disk space is LOW - ${free} GB free (threshold ${min} GB). Notify-only BY DESIGN: no agent will ever act on this; review and free space yourself."
+  else
+    watch_result_stamp disk "ok: ${free} GB free (threshold ${min} GB)"
+  fi
+}
+
+# Backup freshness: the vault hourly log's age, plus the config-backup stamp
+# when that setting is on. Seam: WATCH_BACKUP_LOG_OVERRIDE.
+watch_backup_run() {
+  local log maxh now age summary
+  log="${WATCH_BACKUP_LOG_OVERRIDE:-$HOME/Library/Logs/vault-git-hourly.log}"
+  maxh="${CFG_WATCH_BACKUP_H:-3}"; now=$(date +%s)
+  if [ -f "$log" ]; then
+    age=$(( now - $(stat -f %m "$log" 2>/dev/null || echo "$now") ))
+    if [ "$age" -gt $((maxh * 3600)) ]; then
+      summary="vault backup STALE ($((age / 3600))h old, max ${maxh}h)"
+      notify "watch-backup" "Agent Nexus watch: the vault hourly backup looks STALE - its log was last written $((age / 3600))h ago (threshold ${maxh}h). Check the vault-backup-hourly task in the schedule and the run reports. Notify-only: nothing is run for you."
+    else
+      summary="vault backup ok ($((age / 60))m ago)"
+    fi
+  else
+    summary="no vault backup log (nothing to watch yet)"
+  fi
+  case "${CFG_CONFIG_BACKUP:-off}" in
+    daily|weekly)
+      local stamp interval
+      stamp=$(cat "$SCHEDULE_STATE_DIR/config-backup-last" 2>/dev/null || echo 0)
+      case "$stamp" in ''|*[!0-9]*) stamp=0 ;; esac
+      interval=86400; [ "${CFG_CONFIG_BACKUP}" = "weekly" ] && interval=604800
+      if [ $((now - stamp)) -gt $((interval * 2)) ]; then
+        summary="$summary; config-backup OVERDUE"
+        notify "watch-backup-config" "Agent Nexus watch: the Claude-config backup is OVERDUE (setting: ${CFG_CONFIG_BACKUP}; last ran $(sched_fmt_epoch "$stamp")). The tick should run it - check the scheduler."
+      else
+        summary="$summary; config-backup ok"
+      fi ;;
+  esac
+  watch_result_stamp backup "$summary"
+}
+
+# Repos under projects-root that are BOTH dirty and without a commit for N
+# days: forgotten work, not in-progress work. Top-level dirs only (bounded).
+watch_gitdirty_run() {
+  local root="${CFG_PROJECTS_ROOT:-}" days="${CFG_WATCH_GITDIRTY_DAYS:-7}" now d ct list="" n=0
+  [ -d "$root" ] || { watch_result_stamp git-dirty "projects-root not found"; return 0; }
+  now=$(date +%s)
+  for d in "$root"/*/; do
+    [ -d "$d/.git" ] || continue
+    [ -n "$(git -C "$d" status --porcelain 2>/dev/null | head -1)" ] || continue
+    ct=$(git -C "$d" log -1 --format=%ct 2>/dev/null); case "$ct" in ''|*[!0-9]*) ct=$now ;; esac
+    [ $((now - ct)) -gt $((days * 86400)) ] || continue
+    n=$((n + 1)); list="$list${list:+, }$(basename "$d") ($(( (now - ct) / 86400 ))d)"
+  done
+  if [ "$n" -gt 0 ]; then
+    watch_result_stamp git-dirty "$n repo(s) dirty with no commit in ${days}d: $list"
+    notify "watch-git-dirty" "Agent Nexus watch: $n repo(s) sit dirty with no commit in over ${days} days: $list. Notify-only; if you want it investigated, ask a session."
+  else
+    watch_result_stamp git-dirty "ok: nothing dirty past ${days}d"
+  fi
+}
+
+# Dropbox "conflicted copy" files under projects-root (bounded depth, last 30
+# days). The LOUD kind of divergence; the quiet kind is what check:-gated
+# integrity tasks exist for.
+watch_conflicts_run() {
+  local root="${CFG_PROJECTS_ROOT:-}" found n
+  [ -d "$root" ] || { watch_result_stamp conflicts "projects-root not found"; return 0; }
+  found=$(find "$root" -maxdepth 5 -name "*conflicted copy*" -mtime -30 2>/dev/null | head -10)
+  if [ -n "$found" ]; then
+    n=$(printf '%s\n' "$found" | wc -l | tr -d ' ')
+    watch_result_stamp conflicts "$n conflict file(s) found (newest 10 in the schedule log)"
+    printf '%s\n' "$found" | while IFS= read -r _cf; do sched_log "WATCH conflicts: $_cf"; done
+    notify "watch-conflicts" "Agent Nexus watch: $n Dropbox 'conflicted copy' file(s) under your projects root (last 30 days). RECONCILE, do not just delete - a conflict file can hold real edits. Newest: $(printf '%s\n' "$found" | head -1)"
+  else
+    watch_result_stamp conflicts "ok: none in 30 days"
+  fi
+}
+
+# The tick entry point. Disk + backup are cheap stats and run every beat; the
+# two tree scans self-throttle to one pass per ~6h (seam: WATCH_SCAN_INTERVAL).
+watches_tick() {
+  watch_on disk && watch_disk_run
+  watch_on backup && watch_backup_run
+  local now stamp
+  now=$(date +%s); stamp=$(cat "$SCHEDULE_STATE_DIR/watch-scan-last" 2>/dev/null || echo 0)
+  case "$stamp" in ''|*[!0-9]*) stamp=0 ;; esac
+  if [ $((now - stamp)) -ge "${WATCH_SCAN_INTERVAL:-21600}" ]; then
+    if watch_on git-dirty || watch_on conflicts; then
+      mkdir -p "$SCHEDULE_STATE_DIR" 2>/dev/null
+      printf '%s\n' "$now" > "$SCHEDULE_STATE_DIR/watch-scan-last"
+      watch_on git-dirty && watch_gitdirty_run
+      watch_on conflicts && watch_conflicts_run
+    fi
+  fi
+  return 0
+}
+
+# pb_matrix_print — every place a playbook could live (the global CLAUDE.md +
+# each registered project dir), one line each: which packs are installed there,
+# with EDITED flagged. The "installed where" view asked for in QA, 2026-07-29.
+pb_matrix_print() {
+  local files=() labels=() seen=" " p f i id st cell row
+  files+=("${CLAUDE_HOME_DIR:-$HOME/.claude}/CLAUDE.md"); labels+=("~/.claude/CLAUDE.md (global)")
+  for p in "${ACTIVE_PATHS[@]}" "${STANDBY_PATHS[@]}" "${ARCHIVED_PATHS[@]}"; do
+    [ -n "$p" ] || continue
+    p=$(resolve_path "$p")
+    case "$seen" in *" $p "*) continue ;; esac
+    seen="$seen$p "
+    files+=("$p/CLAUDE.md"); labels+=("${p/#$HOME/~}/CLAUDE.md")
+  done
+  for i in "${!files[@]}"; do
+    f="${files[$i]}"; row=""
+    if [ ! -f "$f" ]; then
+      row="(no CLAUDE.md)"
+    else
+      while IFS= read -r id; do
+        st=$(pb_status "$f" "$id")
+        case "$st" in
+          intact) row="$row${row:+, }$id" ;;
+          edited) row="$row${row:+, }$id (EDITED)" ;;
+        esac
+      done < <(pb_ids)
+      [ -z "$row" ] && row="none"
+    fi
+    printf '  %-44s %s\n' "${labels[$i]}" "$(cdim "$row")"
+  done
+}
+
+# The Watches screen: built-ins with status/threshold/last result, the
+# internal tick checks (visible at last), the playbooks matrix.
+cmd_watches() {
+  parse_sessions_file
+  while true; do
+    echo ""
+    panel_open "Watches — background sensors riding the 15-minute tick"
+    local BOX_LABEL_W=12
+    box_open "KEY"
+    box_line "[on/off]" 'is the watch enabled (toggle below)'
+    box_line "action"   'NOTIFY-ONLY watches never trigger any agent, by design'
+    box_line "last"     'most recent result and when (scans run every ~6h)'
+    box_close
+    _w_badge() { if watch_on "$1"; then printf 'on '; else printf 'off'; fi; }
+    printf '  1. [%s] %-14s %-12s min free: %s GB\n' "$(_w_badge disk)" "disk-space" "NOTIFY-ONLY" "${CFG_WATCH_DISK_GB:-10}"
+    printf '            %s\n' "$(cdim "last: $(watch_result_read disk)")"
+    printf '  2. [%s] %-14s %-12s vault log max age: %sh (+ config-backup stamp)\n' "$(_w_badge backup)" "backup-fresh" "NOTIFY-ONLY" "${CFG_WATCH_BACKUP_H:-3}"
+    printf '            %s\n' "$(cdim "last: $(watch_result_read backup)")"
+    printf '  3. [%s] %-14s %-12s dirty + no commit for %sd\n' "$(_w_badge git-dirty)" "git-dirty" "notify" "${CFG_WATCH_GITDIRTY_DAYS:-7}"
+    printf '            %s\n' "$(cdim "last: $(watch_result_read git-dirty)")"
+    printf '  4. [%s] %-14s %-12s Dropbox "conflicted copy" files, 30d\n' "$(_w_badge conflicts)" "conflict-scan" "notify" ""
+    printf '            %s\n' "$(cdim "last: $(watch_result_read conflicts)")"
+    echo ""
+    chead "Internal checks on the same tick (no settings here; always on)"
+    cdim "  sign-in expiry (daily) · TCC file-access probe · permission-watch ·"
+    cdim "  Telegram denied-check · config-backup · Context Watch sweep."
+    printf '  %s\n' "$(cdim "last tick: $(sched_fmt_epoch "$(cat "$SCHEDULE_STATE_DIR/last-tick" 2>/dev/null || echo 0)")")"
+    echo ""
+    chead "Playbooks — installed where"
+    pb_matrix_print
+    panel_close
+    local action
+    action=$(pick_option "Watches — pick an action" \
+      "Toggle a watch on/off" \
+      "Change thresholds (disk GB, backup hours, git-dirty days)" \
+      "Run all enabled watches now" \
+      "[ ← back ]")
+    case "$action" in
+      "Toggle"*)
+        local w
+        w=$(pick_option "Toggle which watch?" \
+          "disk-space   (now: $(_w_badge disk))" \
+          "backup-fresh (now: $(_w_badge backup))" \
+          "git-dirty    (now: $(_w_badge git-dirty))" \
+          "conflict-scan (now: $(_w_badge conflicts))" \
+          "[ cancel ]")
+        case "$w" in
+          "disk-space"*)    if watch_on disk;      then CFG_WATCH_DISK="off";      else CFG_WATCH_DISK="on";      fi ;;
+          "backup-fresh"*)  if watch_on backup;    then CFG_WATCH_BACKUP="off";    else CFG_WATCH_BACKUP="on";    fi ;;
+          "git-dirty"*)     if watch_on git-dirty; then CFG_WATCH_GITDIRTY="off";  else CFG_WATCH_GITDIRTY="on";  fi ;;
+          "conflict-scan"*) if watch_on conflicts; then CFG_WATCH_CONFLICTS="off"; else CFG_WATCH_CONFLICTS="on"; fi ;;
+          *) continue ;;
+        esac
+        write_sessions_file && echo "  Saved."
+        action_log "watches: toggled ($w)" ;;
+      "Change thresholds"*)
+        local v
+        read -r -p "  disk: alert below how many GB free? (now ${CFG_WATCH_DISK_GB:-10}; Enter keeps): " v
+        [[ "$v" =~ ^[0-9]+$ ]] && [ "$v" -gt 0 ] && CFG_WATCH_DISK_GB="$v"
+        read -r -p "  backup: vault log stale after how many hours? (now ${CFG_WATCH_BACKUP_H:-3}; Enter keeps): " v
+        [[ "$v" =~ ^[0-9]+$ ]] && [ "$v" -gt 0 ] && CFG_WATCH_BACKUP_H="$v"
+        read -r -p "  git-dirty: flag after how many days without a commit? (now ${CFG_WATCH_GITDIRTY_DAYS:-7}; Enter keeps): " v
+        [[ "$v" =~ ^[0-9]+$ ]] && [ "$v" -gt 0 ] && CFG_WATCH_GITDIRTY_DAYS="$v"
+        write_sessions_file && echo "  Saved."
+        action_log "watches: thresholds changed" ;;
+      "Run all"*)
+        echo "  Running enabled watches..."
+        watch_on disk && watch_disk_run
+        watch_on backup && watch_backup_run
+        watch_on git-dirty && watch_gitdirty_run
+        watch_on conflicts && watch_conflicts_run
+        echo "  Done - results are on the screen above (refreshing)." ;;
+      *) return 0 ;;
+    esac
+  done
 }
 
 cmd_settings() {
@@ -12731,9 +13341,13 @@ Commands, ordered by how often you'll use them:
             vault weekly-run). Add/edit/pause/remove tasks, test-fire on
             demand, and install the launchd ticker that runs every 15 min.
             Schedules take what you type: "18:00", "8am", "daily 7:30 pm",
-            "Sat 08:00", "saturday 8pm". The wizard also asks the target's
-            automation settings (managed, reset, memory, permission mode),
-            and removing a task can optionally remove its session too.
+            "Sat 08:00", "saturday 8pm", "hourly :07", or "event" (no timer;
+            fired by callers via 'fire <id> --as <caller>'). Tasks can also
+            be kind=script (the scheduler runs a command itself, no session)
+            or carry a check= sensor command that gates the fire. The wizard
+            also asks the target's automation settings (managed, reset,
+            memory, permission mode), and removing a task can optionally
+            remove its session too.
             Best practice: point each task's prompt at an instruction file
             (the wizard offers a picker; it stores "Read <file> and follow
             it.").
@@ -12741,8 +13355,13 @@ Commands, ordered by how often you'll use them:
   tick      (headless) One scheduler pass — fire any task that's due into its
             session. Run every 15 min by the launchd agent; not for the menu.
 
-  fire <id> (headless) Immediately fire one task by id, ignoring its schedule
-            and without changing its last-fired state. Useful for testing.
+  fire <id> [--as <caller>]
+            (headless) Immediately fire one task by id, ignoring its schedule
+            and without changing a timer task's last-fired state. --as names
+            the caller for the audit trail and for tasks that carry a
+            may-fire allowlist (event tasks; REFUSED = rc 4). A busy target
+            queues an event fire for retry (rc 0, "QUEUED"); a task whose
+            check command passes returns rc 5 ("SKIP-OK", nothing to do).
 
   install-scheduler
             (headless) Write + load the launchd LaunchAgent that runs 'tick'
@@ -12896,6 +13515,14 @@ Commands, ordered by how often you'll use them:
            has no sync or version history of its own. The config-backup
            setting (daily | weekly) runs this on the tick; the copy is a
            mirror, so history comes from the destination's own versioning.
+
+  watches  The background sensors riding the 15-minute tick: disk-space
+           (NOTIFY-ONLY by design - no agent ever acts on it), backup
+           freshness, git-dirty-too-long, and a Dropbox conflicted-copy
+           scan; each with on/off + thresholds. The screen also shows the
+           internal tick checks (sign-in, TCC, permission-watch, denied-
+           check, config-backup, Context Watch) and where each playbook
+           pack is installed. Also under Tools and maintenance.
 
   setup    Run setup.sh — the configuration wizard. Asks for machine
            name, projects-root, the launch defaults above, etc.; offers to
@@ -13122,6 +13749,7 @@ cmd_tools_menu() {
       "Boot-restore sweep now — the same relaunch pass the scheduler runs at boot" \
       "System health check — sessions, scheduler, and bus (doctor)" \
       "Remote control — check status / turn ON / turn OFF across sessions" \
+      "Watches — disk, backup freshness, git-dirty, Dropbox conflicts (+ playbooks matrix)" \
       "Alerts and run reports — what automation did, and what it tried to tell you" \
       "Update Agent Nexus — pull the latest version from GitHub" \
       "Regenerate tasks.json — rebuild VS Code's task list (rarely needed by hand)" \
@@ -13132,6 +13760,7 @@ cmd_tools_menu() {
       "Boot-restore"*)     cmd_boot_restore; read -r -p "Press Enter to continue..." _ ;;
       "System health"*)    cmd_doctor; read -r -p "Press Enter to continue..." _ ;;
       "Remote control"*)   cmd_cycle_remote_control; read -r -p "Press Enter to continue..." _ ;;
+      "Watches"*)          cmd_watches ;;
       "Alerts and run"*)   cmd_activity_log; read -r -p "Press Enter to continue..." _ ;;
       "Update Agent"*)     cmd_self_update; read -r -p "Press Enter to continue..." _ ;;
       "Regenerate"*)       cmd_regen_tasks; read -r -p "Press Enter to continue..." _ ;;
@@ -13258,12 +13887,29 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
       ;;
     fire)
       shift
-      fire_task "$1"; rc=$?
+      FIRE_WANT="${1:-}"; [ $# -gt 0 ] && shift
+      FIRE_CALLER="cli"
+      while [ $# -gt 0 ]; do
+        case "$1" in --as) FIRE_CALLER="${2:-cli}"; [ $# -gt 1 ] && shift ;; esac
+        shift
+      done
+      fire_task "$FIRE_WANT"; rc=$?
       case "$rc" in
-        0) echo "OK: fired '$1'";;
-        1) echo "ERROR: target session for '$1' not running" >&2;;
-        2) echo "BUSY: target for '$1' looked busy" >&2;;
-        3) echo "ERROR: no task with id '$1'" >&2;;
+        0) if [ -n "${FIRE_SCRIPT_RC:-}" ] && [ "$FIRE_SCRIPT_RC" != "0" ]; then
+             echo "RAN-FAILED: script task '$FIRE_WANT' ran but exited rc=$FIRE_SCRIPT_RC (tail: script-runs/$FIRE_WANT.last in the state dir)" >&2
+           else
+             echo "OK: fired '$FIRE_WANT'"
+           fi;;
+        1) echo "ERROR: target session for '$FIRE_WANT' not running" >&2;;
+        2) if [ -n "${FIRE_SPOOLED:-}" ]; then
+             echo "BUSY: target for '$FIRE_WANT' is busy - QUEUED for retry (the tick re-fires it, 6h cap)"
+             rc=0   # accepted for delivery; a drop past the cap notifies
+           else
+             echo "BUSY: target for '$FIRE_WANT' looked busy" >&2
+           fi;;
+        3) echo "ERROR: no task with id '$FIRE_WANT'" >&2;;
+        4) echo "REFUSED: task '$FIRE_WANT' does not allow caller '$FIRE_CALLER' (its may-fire list decides; pass --as <allowed-token>)" >&2;;
+        5) echo "SKIP-OK: check for '$FIRE_WANT' passed - nothing to deliver";;
       esac
       exit "$rc"
       ;;
@@ -13340,6 +13986,10 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     context-watch)
       shift
       cmd_context_watch "$@"
+      ;;
+    watches)
+      shift
+      cmd_watches "$@"
       ;;
     doctor)
       shift

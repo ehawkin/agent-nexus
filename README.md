@@ -21,10 +21,26 @@ keyboard shortcut (`Cmd+Shift+B`) reconnects to all of them as VS Code editor ta
   once. Three tiers (Active / Standby / Archived) keep the working set
   honest: Standby sessions stay findable but are never auto-started.
 - **Scheduled tasks** - fire a prompt into any session on a schedule, written
-  however you'd say it ("Sat 08:00", "saturday 8pm", "daily 7:30 am"). Each
-  run fires at most once, skips a busy session, catches up a missed run
-  within a window you set, and files a one-line report of what it did. A
-  wizard walks creation end to end; tasks are editable in place.
+  however you'd say it ("Sat 08:00", "saturday 8pm", "daily 7:30 am",
+  "hourly :07"). Each run fires at most once, skips a busy session, catches
+  up a missed run within a window you set, and files a one-line report of
+  what it did. A wizard walks creation end to end; tasks are editable in
+  place.
+- **Event-driven and sensor-gated tasks** - a task with schedule `event` has
+  no timer at all: scripts fire it on demand (`agent-nexus fire <id> --as
+  <caller>`), with an optional per-task caller allowlist (refusals audited),
+  and a busy target queues the fire for retry instead of dropping it. A
+  `check=` command on any task turns it into a sensor gate: exit 0 skips
+  quietly, nonzero fires with the sensor's output saved where the prompt can
+  read it. `kind=script` tasks skip sessions entirely - the scheduler runs
+  the command itself (hourly backups, sweeps), so plain launchd jobs can
+  live inside the tool with everything else.
+- **Watches** - built-in background sensors on the same 15-minute beat, each
+  with on/off + thresholds: disk space (notify-only BY DESIGN - no agent
+  ever acts on it), backup freshness, git-dirty-too-long, and a Dropbox
+  conflicted-copy scan. The Watches screen also shows what the internal
+  tick already checks (sign-in expiry, macOS file-access, approvals,
+  config backup, Context Watch) and where each playbook pack is installed.
 - **Self-healing automation** - auto-managed sessions are relaunched
   automatically if they die (after a reboot too, with boot-restore on),
   resuming the same Claude conversation.
