@@ -56,6 +56,14 @@ keyboard shortcut (`Cmd+Shift+B`) reconnects to all of them as VS Code editor ta
 - **Launch settings you own** - every session's flags come from settings,
   not hardcoding: permission mode (`bypass` / `auto` / `ask`), Chrome on or
   off, Remote Control on or off, global defaults with per-session overrides.
+- **Context Watch** - every session's context-window occupancy, read for
+  free from its own transcript on each tick and shown everywhere you look:
+  `ctx:NN%` badges in the hub, a live row on the session info screen, a
+  warning line when a session crosses your thresholds (defaults: notice at
+  45%, act at 60%), a `/status` line on the phone, and a per-session
+  history log that reads as the session's context story (the climb, the
+  compaction cliffs). Passive by design: it measures and shows, and never
+  types into a session.
 - **Playbooks** - opt-in process packs you can append to a CLAUDE.md of your
   choice: a doc-tracking system (QA log / review queue / backlog /
   changelog), living session handoffs, compaction-safe documentation

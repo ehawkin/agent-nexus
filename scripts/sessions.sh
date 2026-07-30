@@ -487,6 +487,10 @@ parse_sessions_file() {
   CFG_CONFIG_BACKUP=""
   CFG_CONFIG_BACKUP_DIR=""
   CFG_HANDBOOK_DIR=""
+  CFG_CONTEXT_WATCH=""
+  CFG_CONTEXT_NOTICE=""
+  CFG_CONTEXT_ACT=""
+  CFG_CONTEXT_TELEGRAM=""
   ACTIVE_NAMES=()
   ACTIVE_PATHS=()
   ACTIVE_IDS=()
@@ -554,6 +558,10 @@ parse_sessions_file() {
             config-backup) CFG_CONFIG_BACKUP="$value" ;;
             config-backup-dir) CFG_CONFIG_BACKUP_DIR="$value" ;;
             handbook-dir) CFG_HANDBOOK_DIR="$value" ;;
+            context-watch) CFG_CONTEXT_WATCH="$value" ;;
+            context-notice) CFG_CONTEXT_NOTICE="$value" ;;
+            context-act) CFG_CONTEXT_ACT="$value" ;;
+            context-telegram) CFG_CONTEXT_TELEGRAM="$value" ;;
             digest-time) CFG_DIGEST_TIME="$value" ;;
             digest-weekly-day) CFG_DIGEST_WEEKLY_DAY="$value" ;;
             digest-dir) CFG_DIGEST_DIR="$value" ;;
@@ -901,6 +909,10 @@ digest: ${CFG_DIGEST:-off}
 config-backup: ${CFG_CONFIG_BACKUP:-off}
 config-backup-dir: ${CFG_CONFIG_BACKUP_DIR:-}
 handbook-dir: ${CFG_HANDBOOK_DIR:-}
+context-watch: ${CFG_CONTEXT_WATCH:-on}
+context-notice: ${CFG_CONTEXT_NOTICE:-45}
+context-act: ${CFG_CONTEXT_ACT:-60}
+context-telegram: ${CFG_CONTEXT_TELEGRAM:-off}
 digest-time: ${CFG_DIGEST_TIME:-08:00}
 digest-weekly-day: ${CFG_DIGEST_WEEKLY_DAY:-Mon}
 digest-dir: ${CFG_DIGEST_DIR:-}
@@ -6956,6 +6968,15 @@ tgc_status_text() {
     *) if [ "$days" -le 3 ]; then printf '%s\n' "claude sign-in: EXPIRES IN ${days}d"
        else printf '%s\n' "claude sign-in: ~${days}d left"; fi ;;
   esac
+  if ctx_watch_enabled; then
+    local cx="" cp
+    for n in "${ACTIVE_NAMES[@]}"; do
+      cp=$(ctx_pct_stamp "$n")
+      case "$cp" in ''|*[!0-9]*) continue ;; esac
+      [ "$cp" -ge "$(ctx_notice_pct)" ] && cx="${cx:+$cx, }$n ${cp}%"
+    done
+    [ -n "$cx" ] && printf '%s\n' "context:  $cx"
+  fi
   return 0
 }
 
@@ -7516,6 +7537,9 @@ cmd_tick() {
   # folder (setting: config-backup); ~/.claude has no sync or version
   # history of its own.
   config_backup_tick
+  # Context Watch sweep: refresh every Active session's context stamp +
+  # history from its own transcript (reads only; nothing typed anywhere).
+  ctx_watch_tick
   # Approval dialogs (Chrome site gates and friends) parked in tracked panes:
   # push the question to the phone. The daemon also runs this every poll loop;
   # here is the fallback cadence for installs without the daemon.
@@ -10382,11 +10406,18 @@ cmd_settings() {
     _cfg_note "settings.json, auto-memory; ~200 KB) once per interval to"
     _cfg_note "$(config_backup_dir)"
     _cfg_note "(change the destination when enabling; ~/.claude has no sync of its own)"
+    local cw="${CFG_CONTEXT_WATCH:-on}" cwn="${CFG_CONTEXT_NOTICE:-45}" cwa="${CFG_CONTEXT_ACT:-60}" cwt="${CFG_CONTEXT_TELEGRAM:-off}"
+    _cfg_row "context-watch" "$cw (notice ${cwn}%, act ${cwa}%, telegram $cwt)"
+    _cfg_note "on = every tick reads each Active session's context occupancy from its"
+    _cfg_note "own transcript (free; nothing is typed into sessions) and shows it: hub"
+    _cfg_note "ctx:NN% badges, a status-panel line past the thresholds, /status, and a"
+    _cfg_note "per-session history log in the state dir's context-watch/. Crossing the"
+    _cfg_note "act threshold is action-logged; telegram=on also texts an FYI."
     panel_close
     local act
     act=$(pick_option "Edit which setting? (writes to sessions.md; Esc backs out)" \
       "permission-mode   (now: $pm)" "chrome   (now: $ch)" "remote-control   (now: $rc)" \
-      "boot-restore   (now: $br)" "catchup-hours   (now: $cu)" "keep-alive   (now: $ka)" "stale-weeks   (now: $sw)" "update-require-signed   (now: $urs)" "action-log   (now: $al)" "resume-mode   (now: $rm2)" "config-backup   (now: $cb)" "notify-command   (advanced — prefer the Telegram setup below)" "notify-level   (now: $nl)" "Playbooks — append process packs to a CLAUDE.md" "Back up Claude config now" "Set up Telegram notifications (guided)" "Set up Telegram CONTROL from your phone (guided)" "Set up the agent-bus SSH door (remote senders)" "Update Agent Nexus (pull the latest from GitHub)" "[ run setup wizard ]" "[ done ]")
+      "boot-restore   (now: $br)" "catchup-hours   (now: $cu)" "keep-alive   (now: $ka)" "stale-weeks   (now: $sw)" "update-require-signed   (now: $urs)" "action-log   (now: $al)" "resume-mode   (now: $rm2)" "config-backup   (now: $cb)" "context-watch   (now: $cw, ${cwn}/${cwa}%)" "notify-command   (advanced — prefer the Telegram setup below)" "notify-level   (now: $nl)" "Playbooks — append process packs to a CLAUDE.md" "Back up Claude config now" "Set up Telegram notifications (guided)" "Set up Telegram CONTROL from your phone (guided)" "Set up the agent-bus SSH door (remote senders)" "Update Agent Nexus (pull the latest from GitHub)" "[ run setup wizard ]" "[ done ]")
     local v
     case "$act" in
       permission-mode*)
@@ -10448,6 +10479,20 @@ cmd_settings() {
           echo "  Destination (now: $(config_backup_dir))"
           read -r -p "  New destination directory (Enter keeps): " v
           [ -n "$v" ] && CFG_CONFIG_BACKUP_DIR="$v"
+        fi ;;
+      context-watch*)
+        echo "  Passive: reads each Active session's context occupancy from its own"
+        echo "  transcript every tick and SHOWS it (hub badges, status panel, /status,"
+        echo "  per-session history log). Nothing is ever typed into a session."
+        v=$(pick_option "Context watch? (now: $cw)" "[ keep current: $cw ]" on off)
+        case "$v" in ""|"[ keep"*) ;; *) CFG_CONTEXT_WATCH="$v" ;; esac
+        if [ "${CFG_CONTEXT_WATCH:-on}" != "off" ]; then
+          read -r -p "  notice threshold %% (yellow; now $cwn; Enter keeps): " v
+          [[ "$v" =~ ^[0-9]+$ ]] && [ "$v" -gt 0 ] && [ "$v" -lt 100 ] && CFG_CONTEXT_NOTICE="$v"
+          read -r -p "  act threshold %% (refresh-handoff-then-compact; now $cwa; Enter keeps): " v
+          [[ "$v" =~ ^[0-9]+$ ]] && [ "$v" -gt 0 ] && [ "$v" -lt 100 ] && CFG_CONTEXT_ACT="$v"
+          v=$(pick_option "Telegram FYI when a session crosses the act threshold? (now: $cwt)" "[ keep current: $cwt ]" on off)
+          case "$v" in ""|"[ keep"*) ;; *) CFG_CONTEXT_TELEGRAM="$v" ;; esac
         fi ;;
       "Playbooks"*)
         cmd_playbooks
@@ -10674,6 +10719,14 @@ hub_auto_badges() {
       esac
     fi
   done
+  # Context Watch badge from the last swept stamp (cheap; no transcript read).
+  if ctx_watch_enabled; then
+    local _cpct; _cpct=$(ctx_pct_stamp "$n")
+    case "$_cpct" in
+      ''|*[!0-9]*) : ;;
+      *) out="${out:+$out }ctx:${_cpct}%" ;;
+    esac
+  fi
   printf '%s' "${out:--}"
 }
 
@@ -11095,7 +11148,92 @@ hub_info() {
   echo "  path:     ${path:-'(none stored)'} $( [ -n "$path" ] && echo "-> $(resolve_path "$path")" )"
   echo "  uuid:     ${id:-'(none)'}"
   [ -n "$id" ] && echo "  history:  ~/.claude/projects/$(claude_project_slug "$(resolve_path "${path:-/}")")/$id.jsonl"
+  # Live context reading (recomputed now, not the swept stamp).
+  local _cv
+  if _cv=$(ctx_usage "$name" 2>/dev/null); then
+    set -- $_cv
+    echo "  context:  $1 of $2 tokens (${3}%)   history: $(ctx_state_dir)/$name.log"
+  fi
   read -r -p "  Press Enter to continue..." _
+}
+
+# --- Context Watch (tier 1: passive visibility) -------------------------------
+# Every session's context occupancy, read for free from its own transcript:
+# the registry already maps name -> conversation UUID + project path, and each
+# assistant line carries exact usage accounting. Nothing is asked of the model
+# and nothing is typed into any pane; this tier only MEASURES and SHOWS (hub
+# badge, info screen, status panel, /status) and keeps a per-session history
+# log. Tiers 2 (self-awareness hook) and 3 (docs-first self-compaction via
+# checkpoint-compact) build on these stamps later.
+
+ctx_watch_enabled() { case "${CFG_CONTEXT_WATCH:-on}" in off|no|0) return 1 ;; esac; return 0; }
+ctx_state_dir()  { printf '%s' "$SCHEDULE_STATE_DIR/context-watch"; }
+ctx_notice_pct() { printf '%s' "${CFG_CONTEXT_NOTICE:-45}"; }
+ctx_act_pct()    { printf '%s' "${CFG_CONTEXT_ACT:-60}"; }
+
+# ctx_usage <name> -> "used window pct" from the last non-sidechain usage line
+# of the session's transcript. Window: 200k, promoted to 1M once usage proves
+# it. rc 1 when the session/transcript is unknown. Seam: CLAUDE_PROJECTS_DIR.
+ctx_usage() {
+  local name="$1" uuid="" path="" i
+  for i in "${!ACTIVE_NAMES[@]}"; do
+    if [ "${ACTIVE_NAMES[$i]}" = "$name" ]; then uuid="${ACTIVE_IDS[$i]}"; path="${ACTIVE_PATHS[$i]}"; break; fi
+  done
+  [ -z "$uuid" ] && return 1
+  local abs f line us in cr cc used win pct
+  abs=$(resolve_path "$path")
+  f="${CLAUDE_PROJECTS_DIR:-$HOME/.claude/projects}/$(claude_project_slug "$abs")/$uuid.jsonl"
+  [ -f "$f" ] || return 1
+  line=$(tail -c 400000 "$f" 2>/dev/null | grep '"usage":' | grep -v '"isSidechain":true' | tail -1)
+  [ -z "$line" ] && return 1
+  us="${line##*\"usage\":}"   # the LAST usage object on the line is the real one
+  in=$(printf '%s' "$us" | grep -o '"input_tokens":[0-9]*' | head -1 | cut -d: -f2)
+  cr=$(printf '%s' "$us" | grep -o '"cache_read_input_tokens":[0-9]*' | head -1 | cut -d: -f2)
+  cc=$(printf '%s' "$us" | grep -o '"cache_creation_input_tokens":[0-9]*' | head -1 | cut -d: -f2)
+  used=$(( ${in:-0} + ${cr:-0} + ${cc:-0} ))
+  [ "$used" -gt 0 ] || return 1
+  win=200000; [ "$used" -gt 200000 ] && win=1000000
+  pct=$(( used * 100 / win ))
+  printf '%s %s %s' "$used" "$win" "$pct"
+  return 0
+}
+
+# ctx_pct_stamp <name> -> the last SWEPT percent (cheap; for badges).
+ctx_pct_stamp() { awk '{print $2; exit}' "$(ctx_state_dir)/$1.last" 2>/dev/null; }
+
+# ctx_watch_update <name> — refresh the stamp; append history on change; note
+# big drops (a compaction or clear) as events; act-threshold crossings go to
+# the action log and, when context-telegram is on, to the phone.
+ctx_watch_update() {
+  local name="$1" vals used win pct d
+  d="$(ctx_state_dir)"
+  vals=$(ctx_usage "$name") || return 0
+  set -- $vals; used="$1"; win="$2"; pct="$3"
+  mkdir -p "$d" 2>/dev/null
+  local prev_pct=""
+  prev_pct=$(awk '{print $2; exit}' "$d/$name.last" 2>/dev/null)
+  case "$prev_pct" in *[!0-9]*) prev_pct="" ;; esac
+  printf '%s %s %s %s\n' "$(date +%s)" "$pct" "$used" "$win" > "$d/$name.last"
+  [ "$pct" = "${prev_pct:-}" ] && return 0
+  printf '%s  %3d%%  %s/%s\n' "$(date '+%F %H:%M')" "$pct" "$used" "$win" >> "$d/$name.log"
+  if [ -n "$prev_pct" ] && [ $((prev_pct - pct)) -ge 30 ]; then
+    printf '%s  DROP %s%% -> %s%% (compaction or clear)\n' "$(date '+%F %H:%M')" "$prev_pct" "$pct" >> "$d/$name.log"
+  fi
+  if [ -n "$prev_pct" ] && [ "$prev_pct" -lt "$(ctx_act_pct)" ] && [ "$pct" -ge "$(ctx_act_pct)" ]; then
+    action_log "context-watch: $name crossed ${pct}% (act threshold $(ctx_act_pct)%)"
+    if [ "${CFG_CONTEXT_TELEGRAM:-off}" = "on" ]; then
+      notify "ctx-$name" "Context watch: $name is at ${pct}% of its window. Refresh the handoff, then compact or clear."
+    fi
+  fi
+  return 0
+}
+
+# ctx_watch_tick — sweep every Active session (cheap file reads; ~ms each).
+ctx_watch_tick() {
+  ctx_watch_enabled || return 0
+  local n
+  for n in "${ACTIVE_NAMES[@]}"; do ctx_watch_update "$n"; done
+  return 0
 }
 
 # Rename divergence (a manual /rename inside Claude) is COSMETIC: everything
@@ -12465,6 +12603,20 @@ startup_status_lines() {
   if [ "${_dn:-0}" -gt 0 ] 2>/dev/null; then
     printf '%s!!  %s message(s) to the Telegram CONTROL bot from an unknown chat in the last 7 days (dropped + audited: %s)%s\n' \
       "$C_WARN" "$_dn" "$(tgc_log_file)" "$C_RESET"
+  fi
+  # Context Watch: sessions past the notice threshold, red past act.
+  if ctx_watch_enabled; then
+    local _cn _cp _hot="" _act=""
+    for _cn in "${ACTIVE_NAMES[@]}"; do
+      _cp=$(ctx_pct_stamp "$_cn")
+      case "$_cp" in ''|*[!0-9]*) continue ;; esac
+      if [ "$_cp" -ge "$(ctx_act_pct)" ]; then _act="${_act:+$_act, }$_cn ${_cp}%"
+      elif [ "$_cp" -ge "$(ctx_notice_pct)" ]; then _hot="${_hot:+$_hot, }$_cn ${_cp}%"
+      fi
+    done
+    [ -n "$_act" ] && printf '%s!!  context past %s%%: %s (refresh the handoff, then compact or clear)%s\n' \
+      "$C_WARN" "$(ctx_act_pct)" "$_act" "$C_RESET"
+    [ -n "$_hot" ] && printf '%s..  context past %s%%: %s%s\n' "$C_DIM" "$(ctx_notice_pct)" "$_hot" "$C_RESET"
   fi
   return 0
 }
