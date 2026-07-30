@@ -10514,11 +10514,24 @@ cmd_settings() {
           [[ "$v" =~ ^[0-9]+$ ]] && [ "$v" -gt 0 ] && [ "$v" -lt 100 ] && CFG_CONTEXT_ACT="$v"
           v=$(pick_option "Telegram FYI when a session crosses the act threshold? (now: $cwt)" "[ keep current: $cwt ]" on off)
           case "$v" in ""|"[ keep"*) ;; *) CFG_CONTEXT_TELEGRAM="$v" ;; esac
-          echo "  Window size: your plan decides it (200k standard; 1M on plans with the"
-          echo "  long context). auto assumes 200k until a session proves 1M; if you KNOW"
-          echo "  your sessions run 1M, set it and the percentages are right immediately."
-          v=$(pick_option "Context window? (now: ${CFG_CONTEXT_WINDOW:-auto})" "[ keep current: ${CFG_CONTEXT_WINDOW:-auto} ]" auto 1m 200k)
-          case "$v" in ""|"[ keep"*) ;; *) CFG_CONTEXT_WINDOW="$v" ;; esac
+          echo "  Window size: your plan decides it (200k standard; 1M on long-context"
+          echo "  plans, and offerings change). auto assumes 200k until a session proves"
+          echo "  1M; if you KNOW your window, set it and every percentage is right"
+          echo "  immediately. Any size works: 1m, 200k, 500k, or a raw token count."
+          v=$(pick_option "Context window? (now: ${CFG_CONTEXT_WINDOW:-auto})" "[ keep current: ${CFG_CONTEXT_WINDOW:-auto} ]" auto 1m 200k "custom (type a size)")
+          case "$v" in
+            ""|"[ keep"*) ;;
+            custom*)
+              read -r -p "  Window size (e.g. 500k, 2m, or 350000): " v
+              _cwt_saved="$CFG_CONTEXT_WINDOW"; CFG_CONTEXT_WINDOW="$v"
+              if _cwt=$(ctx_window_tokens); then
+                echo "  Set: $v ($_cwt tokens)"
+              else
+                echo "  '$v' is not a size I can read; keeping ${_cwt_saved:-auto}."
+                CFG_CONTEXT_WINDOW="$_cwt_saved"
+              fi ;;
+            *) CFG_CONTEXT_WINDOW="$v" ;;
+          esac
         fi ;;
       "Playbooks"*)
         cmd_playbooks
@@ -11215,6 +11228,22 @@ ctx_state_dir()  { printf '%s' "$SCHEDULE_STATE_DIR/context-watch"; }
 ctx_notice_pct() { printf '%s' "${CFG_CONTEXT_NOTICE:-45}"; }
 ctx_act_pct()    { printf '%s' "${CFG_CONTEXT_ACT:-60}"; }
 
+# ctx_window_tokens -> the configured window in tokens; rc 1 means "auto"
+# (heuristic). Accepts 1m / 200k / 500k / a raw token count, so a new plan
+# size never needs a code change (asked for in QA, 2026-07-29).
+ctx_window_tokens() {
+  local w="${CFG_CONTEXT_WINDOW:-auto}"
+  case "$w" in
+    auto|'') return 1 ;;
+    *[!0-9kKmM]*) return 1 ;;
+    *[kK]) w=$(( ${w%[kK]} * 1000 )) ;;
+    *[mM]) w=$(( ${w%[mM]} * 1000000 )) ;;
+  esac
+  [ "$w" -ge 1000 ] 2>/dev/null || return 1
+  printf '%s' "$w"
+  return 0
+}
+
 # ctx_usage <name> -> "used window pct" from the last non-sidechain usage line
 # of the session's transcript. Window: 200k, promoted to 1M once usage proves
 # it. rc 1 when the session/transcript is unknown. Seam: CLAUDE_PROJECTS_DIR.
@@ -11242,19 +11271,16 @@ ctx_usage() {
   # So: context-window setting (1m | 200k) when the human knows the answer;
   # auto = assume 200k, promote to 1M sticky (per conversation) the moment
   # usage proves it, so a post-compaction dip never demotes.
-  case "${CFG_CONTEXT_WINDOW:-auto}" in
-    1m|1M) win=1000000 ;;
-    200k|200K) win=200000 ;;
-    *)
-      win=200000
-      if [ "$used" -gt 200000 ]; then
-        win=1000000
-        mkdir -p "$(ctx_state_dir)" 2>/dev/null
-        : > "$(ctx_state_dir)/$uuid.window1m"
-      elif [ -f "$(ctx_state_dir)/$uuid.window1m" ]; then
-        win=1000000
-      fi ;;
-  esac
+  if ! win=$(ctx_window_tokens); then
+    win=200000
+    if [ "$used" -gt 200000 ]; then
+      win=1000000
+      mkdir -p "$(ctx_state_dir)" 2>/dev/null
+      : > "$(ctx_state_dir)/$uuid.window1m"
+    elif [ -f "$(ctx_state_dir)/$uuid.window1m" ]; then
+      win=1000000
+    fi
+  fi
   pct=$(( used * 100 / win ))
   printf '%s %s %s' "$used" "$win" "$pct"
   return 0
@@ -11347,12 +11373,18 @@ used=\$(( \${a:-0} + \${b:-0} + \${c:-0} ))
 [ "\$used" -gt 0 ] || exit 0
 CFGF="$SESSIONS_FILE"
 wcfg=\$(sed -n 's/^context-window: *//p' "\$CFGF" 2>/dev/null | head -1)
+win=""
 case "\$wcfg" in
-  1m|1M) win=1000000 ;;
-  200k|200K) win=200000 ;;
-  *) win=200000
-     if [ "\$used" -gt 200000 ] || [ -f "\$SD/\$UUID.window1m" ]; then win=1000000; fi ;;
+  auto|'') : ;;
+  *[!0-9kKmM]*) : ;;
+  *[kK]) win=\$(( \${wcfg%[kK]} * 1000 )) ;;
+  *[mM]) win=\$(( \${wcfg%[mM]} * 1000000 )) ;;
+  *) win="\$wcfg" ;;
 esac
+if [ -z "\$win" ] || [ "\$win" -lt 1000 ] 2>/dev/null; then
+  win=200000
+  if [ "\$used" -gt 200000 ] || [ -f "\$SD/\$UUID.window1m" ]; then win=1000000; fi
+fi
 pct=\$(( used * 100 / win ))
 act=\$(sed -n 's/^context-act: *//p' "\$CFGF" 2>/dev/null | head -1)
 case "\$act" in ''|*[!0-9]*) act=60 ;; esac
