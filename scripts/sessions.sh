@@ -491,6 +491,7 @@ parse_sessions_file() {
   CFG_CONTEXT_NOTICE=""
   CFG_CONTEXT_ACT=""
   CFG_CONTEXT_TELEGRAM=""
+  CFG_CONTEXT_WINDOW=""
   ACTIVE_NAMES=()
   ACTIVE_PATHS=()
   ACTIVE_IDS=()
@@ -562,6 +563,7 @@ parse_sessions_file() {
             context-notice) CFG_CONTEXT_NOTICE="$value" ;;
             context-act) CFG_CONTEXT_ACT="$value" ;;
             context-telegram) CFG_CONTEXT_TELEGRAM="$value" ;;
+            context-window) CFG_CONTEXT_WINDOW="$value" ;;
             digest-time) CFG_DIGEST_TIME="$value" ;;
             digest-weekly-day) CFG_DIGEST_WEEKLY_DAY="$value" ;;
             digest-dir) CFG_DIGEST_DIR="$value" ;;
@@ -913,6 +915,7 @@ context-watch: ${CFG_CONTEXT_WATCH:-on}
 context-notice: ${CFG_CONTEXT_NOTICE:-45}
 context-act: ${CFG_CONTEXT_ACT:-60}
 context-telegram: ${CFG_CONTEXT_TELEGRAM:-off}
+context-window: ${CFG_CONTEXT_WINDOW:-auto}
 digest-time: ${CFG_DIGEST_TIME:-08:00}
 digest-weekly-day: ${CFG_DIGEST_WEEKLY_DAY:-Mon}
 digest-dir: ${CFG_DIGEST_DIR:-}
@@ -5232,6 +5235,10 @@ cmd_activity_log() {
     cdim "  Every command, accepted or refused; DENIED = a chat that is not yours."
     local tg_body; tg_body=$(grep -v '^#' "$(tgc_log_file)" 2>/dev/null | tail -12)
     if [ -n "$tg_body" ]; then printf '%s\n' "$tg_body"; else cdim "  (nothing yet)"; fi
+    # Reading the audit acknowledges it: the status-panel "unknown chat"
+    # notice clears until NEW denied lines appear.
+    tgc_denied_ack 2>/dev/null
+    cdim "  (denied-message notice marked seen; it returns only on NEW attempts)"
     echo ""
   fi
   chead "Recent actions"
@@ -7075,11 +7082,25 @@ tgc_extract_login_url() {
 # last N days (default 7). The stranger-knocking signal, surfaced on the menu
 # status panel and pushed once per quiet period from the tick.
 tgc_denied_recent() {
-  local days="${1:-7}" f cutoff
+  local days="${1:-7}" f cutoff ack=""
   f=$(tgc_log_file); [ -f "$f" ] || { echo 0; return 0; }
   cutoff=$(date -j -v-"${days}"d '+%Y-%m-%d' 2>/dev/null || date -d "$days days ago" '+%Y-%m-%d' 2>/dev/null)
-  awk -v c="$cutoff" '$1 >= c && /DENIED chat=/' "$f" | grep -c . 
+  # Acknowledged watermark: viewing the audit in Alerts stamps "seen through
+  # here"; only lines after it count. "DENIED chat= text=" (blank chat) is a
+  # pre-2026-07-28-fix parser artifact, not a stranger; never count those.
+  ack=$(cat "$SCHEDULE_STATE_DIR/tgc-denied-ack" 2>/dev/null)
+  awk -v c="$cutoff" -v a="${ack:-}" '
+    $1 >= c && /DENIED chat=[^ ]/ { line=$1" "$2; if (a=="" || line > a) n++ }
+    END { print n+0 }' "$f"
   return 0
+}
+
+# tgc_denied_ack — mark every DENIED line so far as seen; the status-panel
+# notice and the tick alert start counting fresh from here.
+tgc_denied_ack() {
+  mkdir -p "$SCHEDULE_STATE_DIR" 2>/dev/null
+  date '+%Y-%m-%d %H:%M:%S' > "$SCHEDULE_STATE_DIR/tgc-denied-ack"
+  printf '0\n' > "$SCHEDULE_STATE_DIR/tgc-denied-seen"
 }
 
 # tgc_denied_check — tick-time: when NEW denied lines appeared since the last
@@ -10493,6 +10514,11 @@ cmd_settings() {
           [[ "$v" =~ ^[0-9]+$ ]] && [ "$v" -gt 0 ] && [ "$v" -lt 100 ] && CFG_CONTEXT_ACT="$v"
           v=$(pick_option "Telegram FYI when a session crosses the act threshold? (now: $cwt)" "[ keep current: $cwt ]" on off)
           case "$v" in ""|"[ keep"*) ;; *) CFG_CONTEXT_TELEGRAM="$v" ;; esac
+          echo "  Window size: your plan decides it (200k standard; 1M on plans with the"
+          echo "  long context). auto assumes 200k until a session proves 1M; if you KNOW"
+          echo "  your sessions run 1M, set it and the percentages are right immediately."
+          v=$(pick_option "Context window? (now: ${CFG_CONTEXT_WINDOW:-auto})" "[ keep current: ${CFG_CONTEXT_WINDOW:-auto} ]" auto 1m 200k)
+          case "$v" in ""|"[ keep"*) ;; *) CFG_CONTEXT_WINDOW="$v" ;; esac
         fi ;;
       "Playbooks"*)
         cmd_playbooks
@@ -10949,7 +10975,8 @@ hub_status_age() {
 # Legacy callers passing show/hide map onto arch/work.
 hub_view_next() {
   case "$1" in
-    work|hide) printf 'arch' ;;
+    work|hide) printf 'act' ;;
+    act)       printf 'arch' ;;
     arch|show) printf 'all' ;;
     *)         printf 'work' ;;
   esac
@@ -10958,6 +10985,7 @@ hub_view_next() {
 # hub_view_label <view> — how the VIEW header names the current scope.
 hub_view_label() {
   case "$1" in
+    act)       printf 'active only' ;;
     arch|show) printf 'working set + archived' ;;
     all)       printf 'everything, incl. untracked' ;;
     *)         printf 'working set (active + standby)' ;;
@@ -10974,36 +11002,52 @@ hub_build_rows() {
   case "$view" in show) view="arch" ;; hide) view="work" ;; esac
   HUB_KINDS=(); HUB_NAMES=(); HUB_PROJS=(); HUB_PATHS=(); HUB_IDS=(); HUB_STATUSES=(); HUB_AUTOS=(); HUB_GROUPS=()
 
+  # Per-row probe memo (status/age + badges are subprocess-heavy: tmux, pgrep,
+  # stat per session). Filled on first computation, answered from memory on
+  # view switches; reset by cmd_hub's slow path. MUST be filled via the
+  # helper (main shell), never inside a $( ) substitution, or the append dies
+  # with the subshell.
+  _hub_probe() {  # <name> <path> <id> -> sets HUB_PROBE_STATUS / HUB_PROBE_AUTO
+    local key="$1" i
+    for i in "${!HUBC_KEYS[@]}"; do
+      if [ "${HUBC_KEYS[$i]}" = "$key" ]; then
+        HUB_PROBE_STATUS="${HUBC_STATUS[$i]}"; HUB_PROBE_AUTO="${HUBC_AUTO[$i]}"
+        return 0
+      fi
+    done
+    HUB_PROBE_STATUS="$(hub_status_age "$(hub_status_for "$1")" "$2" "$3")"
+    HUB_PROBE_AUTO="$(hub_auto_badges "$1")"
+    HUBC_KEYS+=("$key"); HUBC_STATUS+=("$HUB_PROBE_STATUS"); HUBC_AUTO+=("$HUB_PROBE_AUTO")
+  }
+
   local i
   _hub_emit_active() {  # $1 = project filter ("" = all)
     local k
     for k in "${!ACTIVE_NAMES[@]}"; do
       [ -n "$1" ] && [ "${ACTIVE_PROJECTS[$k]}" != "$1" ] && continue
+      _hub_probe "${ACTIVE_NAMES[$k]}" "${ACTIVE_PATHS[$k]}" "${ACTIVE_IDS[$k]}"
       hub_add_row "active" "${ACTIVE_NAMES[$k]}" "${ACTIVE_PROJECTS[$k]}" "${ACTIVE_PATHS[$k]}" \
-        "${ACTIVE_IDS[$k]}" \
-        "$(hub_status_age "$(hub_status_for "${ACTIVE_NAMES[$k]}")" "${ACTIVE_PATHS[$k]}" "${ACTIVE_IDS[$k]}")" \
-        "$(hub_auto_badges "${ACTIVE_NAMES[$k]}")"
+        "${ACTIVE_IDS[$k]}" "$HUB_PROBE_STATUS" "$HUB_PROBE_AUTO"
     done
   }
   _hub_emit_standby() {
+    [ "$view" = "act" ] && return 0
     local k
     for k in "${!STANDBY_NAMES[@]}"; do
       [ -n "$1" ] && [ "${STANDBY_PROJECTS[$k]}" != "$1" ] && continue
+      _hub_probe "${STANDBY_NAMES[$k]}" "${STANDBY_PATHS[$k]}" "${STANDBY_IDS[$k]}"
       hub_add_row "standby" "${STANDBY_NAMES[$k]}" "${STANDBY_PROJECTS[$k]}" "${STANDBY_PATHS[$k]}" \
-        "${STANDBY_IDS[$k]}" \
-        "$(hub_status_age "$(hub_status_for "${STANDBY_NAMES[$k]}")" "${STANDBY_PATHS[$k]}" "${STANDBY_IDS[$k]}")" \
-        "$(hub_auto_badges "${STANDBY_NAMES[$k]}")"
+        "${STANDBY_IDS[$k]}" "$HUB_PROBE_STATUS" "$HUB_PROBE_AUTO"
     done
   }
   _hub_emit_archived() {
-    [ "$view" = "work" ] && return 0
+    case "$view" in work|act) return 0 ;; esac
     local k
     for k in "${!ARCHIVED_NAMES[@]}"; do
       [ -n "$1" ] && [ "${ARCHIVED_PROJECTS[$k]}" != "$1" ] && continue
+      _hub_probe "${ARCHIVED_NAMES[$k]}" "${ARCHIVED_PATHS[$k]}" "${ARCHIVED_IDS[$k]}"
       hub_add_row "archived" "${ARCHIVED_NAMES[$k]}" "${ARCHIVED_PROJECTS[$k]}" "${ARCHIVED_PATHS[$k]}" \
-        "${ARCHIVED_IDS[$k]}" \
-        "$(hub_status_age "$(hub_status_for "${ARCHIVED_NAMES[$k]}")" "${ARCHIVED_PATHS[$k]}" "${ARCHIVED_IDS[$k]}")" \
-        "$(hub_auto_badges "${ARCHIVED_NAMES[$k]}")"
+        "${ARCHIVED_IDS[$k]}" "$HUB_PROBE_STATUS" "$HUB_PROBE_AUTO"
     done
   }
   _hub_emit_dormant() {
@@ -11192,7 +11236,25 @@ ctx_usage() {
   cc=$(printf '%s' "$us" | grep -o '"cache_creation_input_tokens":[0-9]*' | head -1 | cut -d: -f2)
   used=$(( ${in:-0} + ${cr:-0} + ${cc:-0} ))
   [ "$used" -gt 0 ] || return 1
-  win=200000; [ "$used" -gt 200000 ] && win=1000000
+  # Window: the transcript does not say how big the window is, and a 1M
+  # session at 17% is indistinguishable from a 200k one at 84% until usage
+  # exceeds 200k (found live 2026-07-29: a 168k/1M session rendered as 83%).
+  # So: context-window setting (1m | 200k) when the human knows the answer;
+  # auto = assume 200k, promote to 1M sticky (per conversation) the moment
+  # usage proves it, so a post-compaction dip never demotes.
+  case "${CFG_CONTEXT_WINDOW:-auto}" in
+    1m|1M) win=1000000 ;;
+    200k|200K) win=200000 ;;
+    *)
+      win=200000
+      if [ "$used" -gt 200000 ]; then
+        win=1000000
+        mkdir -p "$(ctx_state_dir)" 2>/dev/null
+        : > "$(ctx_state_dir)/$uuid.window1m"
+      elif [ -f "$(ctx_state_dir)/$uuid.window1m" ]; then
+        win=1000000
+      fi ;;
+  esac
   pct=$(( used * 100 / win ))
   printf '%s %s %s' "$used" "$win" "$pct"
   return 0
@@ -11218,6 +11280,22 @@ ctx_watch_update() {
   printf '%s  %3d%%  %s/%s\n' "$(date '+%F %H:%M')" "$pct" "$used" "$win" >> "$d/$name.log"
   if [ -n "$prev_pct" ] && [ $((prev_pct - pct)) -ge 30 ]; then
     printf '%s  DROP %s%% -> %s%% (compaction or clear)\n' "$(date '+%F %H:%M')" "$prev_pct" "$pct" >> "$d/$name.log"
+    # Paperwork check, from outside at zero context cost: a compaction that
+    # was NOT preceded by a docs refresh gets flagged (docs-first rule).
+    local _pp _abs _fresh
+    for _pp in "${!ACTIVE_NAMES[@]}"; do
+      if [ "${ACTIVE_NAMES[$_pp]}" = "$name" ]; then
+        _abs=$(resolve_path "${ACTIVE_PATHS[$_pp]}")
+        if [ -d "$_abs/_admin" ]; then
+          _fresh=$(find "$_abs/_admin" -type f -mmin -30 2>/dev/null | head -1)
+          if [ -z "$_fresh" ]; then
+            printf '%s  WARN drop without a recent _admin docs refresh (docs-first rule)\n' "$(date '+%F %H:%M')" >> "$d/$name.log"
+            action_log "context-watch: $name compacted/cleared without a recent docs refresh"
+          fi
+        fi
+        break
+      fi
+    done
   fi
   if [ -n "$prev_pct" ] && [ "$prev_pct" -lt "$(ctx_act_pct)" ] && [ "$pct" -ge "$(ctx_act_pct)" ]; then
     action_log "context-watch: $name crossed ${pct}% (act threshold $(ctx_act_pct)%)"
@@ -11233,6 +11311,197 @@ ctx_watch_tick() {
   ctx_watch_enabled || return 0
   local n
   for n in "${ACTIVE_NAMES[@]}"; do ctx_watch_update "$n"; done
+  ctx_tier3_tick
+  return 0
+}
+
+# --- Context Watch tier 2: the session sees its own number --------------------
+# A UserPromptSubmit hook: Claude Code runs it on every prompt, handing it the
+# session's transcript_path on stdin; it computes the percent the same way
+# ctx_usage does and prints one line, which the harness appends to the model's
+# context. The model gets a fuel gauge; nothing is asked of it to make the
+# gauge work. Standalone script (no sessions.sh load per prompt; must stay
+# fast); thresholds are read from sessions.md at RUN time so settings changes
+# apply without regenerating.
+
+# ctx_hook_script -> the generated hook, stdout (pure; testable).
+ctx_hook_script() {
+  cat <<EOF
+#!/bin/bash
+# agent-nexus context-watch hook (generated; reinstall regenerates).
+# UserPromptSubmit: reads the hook JSON on stdin, computes context occupancy
+# from the session's own transcript, prints one line for the model.
+IN=\$(cat)
+TP=\$(printf '%s' "\$IN" | sed -n 's/.*"transcript_path":"\([^"]*\)".*/\1/p')
+[ -n "\$TP" ] && [ -f "\$TP" ] || exit 0
+UUID=\$(basename "\$TP" .jsonl)
+SD="$SCHEDULE_STATE_DIR/context-watch"
+[ -f "\$SD/\$UUID.off" ] && exit 0
+line=\$(tail -c 400000 "\$TP" 2>/dev/null | grep '"usage":' | grep -v '"isSidechain":true' | tail -1)
+[ -n "\$line" ] || exit 0
+us="\${line##*\"usage\":}"
+a=\$(printf '%s' "\$us" | grep -o '"input_tokens":[0-9]*' | head -1 | cut -d: -f2)
+b=\$(printf '%s' "\$us" | grep -o '"cache_read_input_tokens":[0-9]*' | head -1 | cut -d: -f2)
+c=\$(printf '%s' "\$us" | grep -o '"cache_creation_input_tokens":[0-9]*' | head -1 | cut -d: -f2)
+used=\$(( \${a:-0} + \${b:-0} + \${c:-0} ))
+[ "\$used" -gt 0 ] || exit 0
+CFGF="$SESSIONS_FILE"
+wcfg=\$(sed -n 's/^context-window: *//p' "\$CFGF" 2>/dev/null | head -1)
+case "\$wcfg" in
+  1m|1M) win=1000000 ;;
+  200k|200K) win=200000 ;;
+  *) win=200000
+     if [ "\$used" -gt 200000 ] || [ -f "\$SD/\$UUID.window1m" ]; then win=1000000; fi ;;
+esac
+pct=\$(( used * 100 / win ))
+act=\$(sed -n 's/^context-act: *//p' "\$CFGF" 2>/dev/null | head -1)
+case "\$act" in ''|*[!0-9]*) act=60 ;; esac
+[ "\$pct" -lt 40 ] && exit 0
+if [ "\$pct" -ge "\$act" ]; then
+  if [ -f "\$SD/\$UUID.paused" ]; then
+    echo "[context-watch] \${pct}% of the context window used. The watch is PAUSED by the user: keep working, do not compact; remind them the watch is paused."
+  else
+    echo "[context-watch] \${pct}% of the context window used (act threshold \${act}%). Finish the current unit of work, update the handoff and docs, commit, then run: agent-nexus compact-checkpoint --next \"<the next step in one line>\" and END YOUR TURN. (The user can defer this with: agent-nexus context-watch pause)"
+  fi
+else
+  echo "[context-watch] \${pct}% of the context window used."
+fi
+exit 0
+EOF
+}
+
+# ctx_hook_json <hook-path> -> the settings.local.json registering it (pure).
+ctx_hook_json() {
+  printf '{\n  "hooks": {\n    "UserPromptSubmit": [\n      { "hooks": [ { "type": "command", "command": "bash \\"%s\\"" } ] }\n    ]\n  }\n}\n' "$1"
+}
+
+# cmd_context_hook_install <session-or-dir> — write the hook script (shared,
+# state dir) and register it in the project's .claude/settings.local.json
+# (fresh file if absent; else print the block for a hand-merge, same policy
+# as the checkpoint hooks).
+cmd_context_hook_install() {
+  local tgt="$1" dir="" i
+  [ -z "$tgt" ] && { echo "usage: $(tool_cmd) context-watch install-hook <session-or-directory>" >&2; return 1; }
+  parse_sessions_file
+  for i in "${!ACTIVE_NAMES[@]}"; do
+    [ "${ACTIVE_NAMES[$i]}" = "$tgt" ] && { dir=$(resolve_path "${ACTIVE_PATHS[$i]}"); break; }
+  done
+  [ -z "$dir" ] && dir="$tgt"
+  [ -d "$dir" ] || { echo "ERROR: '$tgt' is not a registered session or a directory." >&2; return 1; }
+  local hook="$SCHEDULE_STATE_DIR/context-watch-hook.sh"
+  mkdir -p "$SCHEDULE_STATE_DIR" 2>/dev/null
+  ctx_hook_script > "$hook" && chmod +x "$hook"
+  echo "  Hook script: $hook (regenerated)"
+  local f="$dir/.claude/settings.local.json"
+  mkdir -p "$dir/.claude" 2>/dev/null
+  if [ ! -f "$f" ]; then
+    ctx_hook_json "$hook" > "$f"
+    echo "  Registered UserPromptSubmit hook -> $f"
+  elif grep -q "context-watch-hook" "$f" 2>/dev/null; then
+    echo "  $f already registers the hook; nothing to do."
+  else
+    echo "  $f already exists; not overwriting. Merge this into its hooks block:"
+    ctx_hook_json "$hook"
+  fi
+  action_log "context-watch hook installed for $tgt"
+  return 0
+}
+
+# --- Context Watch: in-session human control (pause | resume | off | on) ------
+# pause: reminders keep coming, nothing acts (tier 2 says PAUSED, tier 3 skips).
+# off: that session goes silent entirely. Files are keyed by BOTH name (Nexus
+# side) and conversation UUID (hook side).
+cmd_context_watch() {
+  local verb="${1:-status}" sess="${2:-}" uuid="" i
+  parse_sessions_file
+  if [ -z "$sess" ] && [ -n "${TMUX:-}" ]; then
+    sess=$(tmux display-message -p '#S' 2>/dev/null)
+  fi
+  case "$verb" in
+    install-hook) cmd_context_hook_install "$sess"; return $? ;;
+  esac
+  [ -z "$sess" ] && { echo "usage: $(tool_cmd) context-watch pause|resume|off|on|status [session]" >&2; return 1; }
+  for i in "${!ACTIVE_NAMES[@]}"; do
+    [ "${ACTIVE_NAMES[$i]}" = "$sess" ] && { uuid="${ACTIVE_IDS[$i]}"; break; }
+  done
+  local d; d="$(ctx_state_dir)"; mkdir -p "$d" 2>/dev/null
+  case "$verb" in
+    pause)
+      : > "$d/$sess.paused"; [ -n "$uuid" ] && : > "$d/$uuid.paused"
+      action_log "context-watch paused for $sess"
+      echo "Context watch PAUSED for '$sess': reminders continue, nothing compacts. Resume: $(tool_cmd) context-watch resume" ;;
+    resume|on)
+      rm -f "$d/$sess.paused" "$d/$sess.off" 2>/dev/null
+      [ -n "$uuid" ] && rm -f "$d/$uuid.paused" "$d/$uuid.off" 2>/dev/null
+      action_log "context-watch resumed for $sess"
+      echo "Context watch active again for '$sess'." ;;
+    off)
+      : > "$d/$sess.off"; [ -n "$uuid" ] && : > "$d/$uuid.off"
+      action_log "context-watch off for $sess"
+      echo "Context watch OFF for '$sess' (silent). Re-enable: $(tool_cmd) context-watch on" ;;
+    status)
+      local st="active" pv
+      [ -f "$d/$sess.paused" ] && st="paused"
+      [ -f "$d/$sess.off" ] && st="off"
+      pv=$(ctx_pct_stamp "$sess"); : "${pv:=?}"
+      echo "context-watch for '$sess': $st, last reading ${pv}% (notice $(ctx_notice_pct)%, act $(ctx_act_pct)%)" ;;
+    *) echo "usage: $(tool_cmd) context-watch pause|resume|off|on|status|install-hook [session]" >&2; return 1 ;;
+  esac
+  return 0
+}
+
+# --- Context Watch tier 3: docs-first self-compaction (managed sessions) ------
+# For a managed session with checkpoint-compact:on, crossing the act threshold
+# gets the steer typed in FROM OUTSIDE when the pane is idle: the model then
+# does its docs, runs compact-checkpoint, and the existing machinery compacts.
+# Throttled to one steer per session per 6h; pause/off respected.
+
+ctx_tier3_eligible() {  # <name> -> rc 0 when a steer should go
+  local name="$1" i on="" pct d stamp now last
+  ctx_watch_enabled || return 1
+  for i in "${!PKG_NAMES[@]}"; do
+    [ "${PKG_NAMES[$i]}" = "$name" ] && { [ "${PKG_CKPTS[$i]}" = "on" ] && on=1; break; }
+  done
+  [ -n "$on" ] || return 1
+  d="$(ctx_state_dir)"
+  [ -f "$d/$name.paused" ] && return 1
+  [ -f "$d/$name.off" ] && return 1
+  pct=$(ctx_pct_stamp "$name")
+  case "$pct" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$pct" -ge "$(ctx_act_pct)" ] || return 1
+  stamp="$d/$name.steered"; now=$(date +%s); last=0
+  [ -f "$stamp" ] && last=$(cat "$stamp" 2>/dev/null)
+  case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  [ $((now - last)) -ge 21600 ] || return 1
+  return 0
+}
+
+ctx_steer_text() {  # <pct> -> the injected instruction (pure; testable)
+  printf 'Context watch: your context is at %s%% of its window. Finish the current unit of work, update the handoff and docs, commit, then run: %s compact-checkpoint --next "<the next step in one line>" and END YOUR TURN.' "$1" "$(tool_cmd)"
+}
+
+ctx_tier3_tick() {
+  local name sock cap1 cap2
+  sock=$(sched_tmux_socket)
+  for name in "${PKG_NAMES[@]}"; do
+    ctx_tier3_eligible "$name" || continue
+    tmux -S "$sock" has-session -t "$name" 2>/dev/null || continue
+    # Idle check: prompt visible and pane unchanged across 2s; a busy session
+    # is skipped this tick and caught on a later one (the stamp is only
+    # written when the steer actually goes).
+    cap1=$(tmux -S "$sock" capture-pane -p -t "$name" 2>/dev/null | tail -20)
+    printf '%s' "$cap1" | grep -q '❯' || continue
+    sleep 2
+    cap2=$(tmux -S "$sock" capture-pane -p -t "$name" 2>/dev/null | tail -20)
+    [ "$cap1" = "$cap2" ] || continue
+    tmux -S "$sock" send-keys -t "$name" -l "$(ctx_steer_text "$(ctx_pct_stamp "$name")")"
+    sleep 1
+    tmux -S "$sock" send-keys -t "$name" Enter
+    date +%s > "$(ctx_state_dir)/$name.steered"
+    printf '%s  STEER at %s%% (tier 3: docs-first self-compaction)\n' "$(date '+%F %H:%M')" "$(ctx_pct_stamp "$name")" >> "$(ctx_state_dir)/$name.log"
+    sched_log "CTX-STEER $name at $(ctx_pct_stamp "$name")% (checkpoint-compact discipline)"
+    action_log "context-watch steered $name at $(ctx_pct_stamp "$name")%"
+  done
   return 0
 }
 
@@ -11958,14 +12227,23 @@ cmd_hub() {
   while true; do
     # View-change requests from the group submenu (phone path for Ctrl-A/P/S).
     case "${HUB_REQ_VIEW:-}" in
-      view) view=$(hub_view_next "$view") ;;
-      mode) if [ "$mode" = "project" ]; then mode="state"; else mode="project"; fi ;;
+      view) view=$(hub_view_next "$view"); HUB_FAST=1 ;;
+      mode) if [ "$mode" = "project" ]; then mode="state"; else mode="project"; fi; HUB_FAST=1 ;;
     esac
     HUB_REQ_VIEW=""
-    parse_sessions_file
-    read_tmux_sessions
-    parse_packages
-    parse_scheduled_tasks 2>/dev/null
+    # Fast path: a pure view/mode/filter switch changes WHICH rows show, not
+    # any session's state, so skip the expensive re-probe (registry parse +
+    # tmux reads per row) and let the probe cache answer. Any real action
+    # falls through the slow path and resets the cache.
+    if [ "${HUB_FAST:-}" = "1" ]; then
+      HUB_FAST=""
+    else
+      parse_sessions_file
+      read_tmux_sessions
+      parse_packages
+      parse_scheduled_tasks 2>/dev/null
+      HUBC_KEYS=(); HUBC_STATUS=(); HUBC_AUTO=()
+    fi
     hub_build_rows "$mode" "$view"
     hub_apply_filter "$filter_kinds"
 
@@ -12058,9 +12336,9 @@ cmd_hub() {
       fi
       sel=$(printf '%s\n' "$_sels" | sed -n 1p)
       case "$key" in
-        ctrl-p) mode="project"; continue ;;
-        ctrl-s) mode="state"; continue ;;
-        ctrl-a) view=$(hub_view_next "$view"); continue ;;
+        ctrl-p) mode="project"; HUB_FAST=1; continue ;;
+        ctrl-s) mode="state"; HUB_FAST=1; continue ;;
+        ctrl-a) view=$(hub_view_next "$view"); HUB_FAST=1; continue ;;
         ctrl-b) hub_group_actions "$stale_list" "$view" "$mode"; continue ;;
         ctrl-f)
           local _nf
@@ -12069,6 +12347,7 @@ cmd_hub() {
             # A filter needs every category to exist before it can thin them.
             [ -n "$filter_kinds" ] && view="all"
           fi
+          HUB_FAST=1
           continue ;;
       esac
       [ -z "$sel" ] && return 0
@@ -12101,7 +12380,7 @@ cmd_hub() {
         "") return 0 ;;
         p|P) mode="project"; continue ;;
         s|S) mode="state"; continue ;;
-        a|A) view=$(hub_view_next "$view"); continue ;;
+        a|A) view=$(hub_view_next "$view"); HUB_FAST=1; continue ;;
         b|B) hub_group_actions "$stale_list" "$view" "$mode"; continue ;;
         f|F)
           local _nf
@@ -12569,6 +12848,16 @@ Commands, ordered by how often you'll use them:
            beside it) before anything is written. Installing twice is a
            no-op (marker-guarded). Also in Settings + Setup.
 
+  context-watch pause|resume|off|on|status|install-hook [session]
+           The context gauge's controls. pause = reminders continue but
+           nothing compacts (for long conversations you want to continue);
+           resume re-arms; off silences one session entirely. install-hook
+           gives a session tier 2 self-awareness: a UserPromptSubmit hook
+           shows the model its own context percent every turn, and past the
+           act threshold tells it to update docs then run
+           compact-checkpoint. Run with no session argument from INSIDE a
+           tmux session to target that session.
+
   backup-claude-config [dest]
            Copy the authored ~/.claude files (CLAUDE.md, settings.json,
            per-project auto-memory; ~200 KB) to a synced folder; ~/.claude
@@ -13015,6 +13304,10 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     backup-claude-config)
       shift
       cmd_backup_claude_config "$@"
+      ;;
+    context-watch)
+      shift
+      cmd_context_watch "$@"
       ;;
     doctor)
       shift
