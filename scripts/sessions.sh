@@ -6440,7 +6440,7 @@ heal: resume
 permission-mode: bypass
 memory: none
 reset: none
-checkpoint-compact: off
+checkpoint-compact: none
 keep-alive: default
 ' "$name" >> "$MANAGED_FILE"
   return 0
@@ -8902,13 +8902,14 @@ write_packages_template() {
 #   permission-mode: bypass       # bypass | auto | ask  (launch permission flag)
 #   memory:  none                 # none | read | read-write (STATE.md contract)
 #   reset:   none                 # none | compact | clear (context wipe before a run)
-#   checkpoint-compact: off       # off | compact | clear (shed context at model-
-#                                 # declared checkpoints; clear = /clear instead of
-#                                 # /compact; 'on' is accepted as legacy for compact)
+#   checkpoint-compact: none      # none | compact | clear - the same vocabulary
+#                                 # as reset. Shed context at model-declared
+#                                 # checkpoints; clear = /clear instead of /compact.
+#                                 # Legacy spellings accepted: on=compact, off=none.
 #   keep-alive: default           # default | on | off (heal this session every tick if down)
 #
 # Defaults when a key is missing: heal=resume, permission-mode=bypass, memory=none,
-# reset=none, checkpoint-compact=off, keep-alive=default (follow the global
+# reset=none, checkpoint-compact=none, keep-alive=default (follow the global
 # keep-alive setting in sessions.md, itself defaulting to on).
 #   permission-mode is this session's launch posture (overrides the global
 #   permission-mode in sessions.md):
@@ -8955,7 +8956,7 @@ write_packages_template() {
 # permission-mode: bypass
 # memory:  none
 # reset:   none
-# checkpoint-compact: off
+# checkpoint-compact: none
 # keep-alive: default
 TPL
 }
@@ -8984,7 +8985,7 @@ parse_packages() {
         nm="$(printf '%s' "${line#\#\#\#}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
         cur=$(( ${#PKG_NAMES[@]} ))
         PKG_NAMES+=("$nm"); PKG_SESSIONS+=("$nm"); PKG_DIRS+=("")
-        PKG_HEALS+=("resume"); PKG_PROFILES+=("bypass"); PKG_MEMORIES+=("none"); PKG_RESETS+=("none"); PKG_CKPTS+=("off"); PKG_KEEPALIVES+=("default")
+        PKG_HEALS+=("resume"); PKG_PROFILES+=("bypass"); PKG_MEMORIES+=("none"); PKG_RESETS+=("none"); PKG_CKPTS+=("none"); PKG_KEEPALIVES+=("default")
         continue ;;
       '#'*|'') continue ;;
     esac
@@ -9004,11 +9005,11 @@ parse_packages() {
       memory)  [ -n "$val" ] && PKG_MEMORIES[$cur]="$val" ;;
       reset)   [ -n "$val" ] && PKG_RESETS[$cur]="$val" ;;
       checkpoint-compact)
-               # 'on' is the legacy spelling of 'compact' (renamed 2026-07-29
-               # to match reset's compact|clear vocabulary); normalize on
-               # read, so the next write migrates the file.
+               # Same vocabulary as reset: none | compact | clear. 'on' and
+               # 'off' are the pre-2026-07-30 spellings; normalize on read,
+               # so the next write migrates the file.
                if [ -n "$val" ]; then
-                 [ "$val" = "on" ] && val="compact"
+                 case "$val" in on) val="compact" ;; off) val="none" ;; esac
                  PKG_CKPTS[$cur]="$val"
                fi ;;
       keep-alive) [ -n "$val" ] && PKG_KEEPALIVES[$cur]="$val" ;;
@@ -10553,14 +10554,14 @@ managed_edit_fields() {
               v=$(pick_option "reset (now: $cur_r)" "[ keep current: $cur_r ]" none compact clear)
               case "$v" in ""|"[ keep"*) return 0 ;; *) PKG_RESETS[$idx]="$v" ;; esac ;;
     checkpoint-compact*)
-              echo "  Same vocabulary as reset: off | compact | clear."
+              echo "  Same vocabulary as reset: none | compact | clear."
               echo "  compact = the session sheds its own context on long runs: at safe checkpoints"
               echo "  it declares (after committing + updating its docs) it runs compact-checkpoint,"
               echo "  which compacts the conversation and re-prompts it to continue. Cuts token cost."
               echo "  clear = same protocol, but the checkpoint CLEARS instead of compacting (new"
               echo "  conversation, id re-captured; the docs it just wrote ARE the memory). For"
               echo "  stateless recurring work where a carried summary is dead weight."
-              v=$(pick_option "checkpoint-compact (now: $cur_c)" "[ keep current: $cur_c ]" off compact clear)
+              v=$(pick_option "checkpoint-compact (now: $cur_c)" "[ keep current: $cur_c ]" none compact clear)
               case "$v" in ""|"[ keep"*) return 0 ;; *) PKG_CKPTS[$idx]="$v" ;; esac ;;
     keep-alive*)
               local cur_k="${PKG_KEEPALIVES[$idx]}"
